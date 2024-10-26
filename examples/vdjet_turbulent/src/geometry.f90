@@ -24,26 +24,65 @@ contains
       ! Create a grid from input params
       create_grid: block
          use sgrid_class, only: cartesian
-         integer :: i,j,k,nx,ny,nz,n_jet, n_large, jj
+         integer :: i,j,k,nx,ny,nz,n_jet, n_domain, jj
          real(WP) :: Lx,Ly,Lz
-         real(WP), dimension(:), allocatable :: x,y,z
-         real(WP) :: Djet, dy, dy_large
+         real(WP), dimension(:), allocatable :: x,y,z, dy_array, dy_norm
+         real(WP) :: Djet, dy_max, dy_min, a, b, Norm
 
          ! Read in grid definition
          call param_read('Lx',Lx); call param_read('nx',nx); allocate(x(nx+1))
          call param_read('Ly',Ly); call param_read('ny',ny); allocate(y(ny+1))
          call param_read('Lz',Lz); call param_read('nz',nz); allocate(z(nz+1))
          call param_read('D jet', Djet) ! Read in particle diameter
+         allocate(dy_array(ny))
+         allocate(dy_norm(ny))
 
          ! Create simple rectilinear grid
          do i=1,nx+1
             x(i)=real(i-1,WP)/real(nx,WP)*Lx
          end do
-         do j=1,ny+1
-            y(j)=real(j-1,WP)/real(ny,WP)*Ly-0.5_WP*Ly
-         end do
+         !do j=1,ny+1
+         !   y(j)=real(j-1,WP)/real(ny,WP)*Ly-0.5_WP*Ly
+         !end do
          do k=1,nz+1
             z(k)=real(k-1,WP)/real(nz,WP)*Lz-0.5_WP*Lz
+         end do
+
+         ! Number of grid cells in jet domain
+         n_jet = 20 ! -> Make input parameter
+         dy_min = 0.01_WP*Djet! -> Input parameter
+
+         ! Size/Number of large grid cells
+         n_domain = ny - n_jet
+         dy_max = Ly*1_WP/real(n_domain,WP)
+ 
+         ! Scaling Factors 
+         ! At jj = 0.75*n_jet -> dy/dy_max = 0.99
+         ! At jj = 1 (near center) -> dy = dy_min
+         b = (0.75 - 1/n_jet)/(atanh(0.99) - atanh(dy_min/dy_max))
+         a = atanh(0.99) - 0.75/b
+
+         !> Start at y = 0, Create upper half of y grid, ny should be even
+         do j=ny/2 +2,ny+1
+            jj = j - (0.5*ny+1) ! Offset for index so tanh(x) is close to 0 near j = ny/2
+            dy_array(j-1) = dy_max*tanh( real(jj/(b*n_jet), WP) + a )             
+         end do
+
+         !> Mirror other half of y grid
+         do j=1,ny/2
+            dy_array(j) = dy_array(ny + 1 - j)
+         end do
+
+         ! Normalize so that the sum of the cell sizes = Ly
+         Norm = sum(dy_array)/Ly
+         do j = 1,ny
+            dy_norm(j) = dy_array(j)/Norm
+         end do
+
+         ! Create grid in y
+         y(1) = -0.5_WP*Ly ! Initial point 
+         do j = 2,ny+1
+            y(j) = y(j-1) + dy_norm(j-1);
          end do
 
          ! General serial grid object

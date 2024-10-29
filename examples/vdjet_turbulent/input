@@ -4,16 +4,16 @@ Partition :	8 1 1
 # Mesh definition
 Lx :	0.4
 Ly :	0.2
-Lz :	0.01 #0.02  
+Lz :	0.001 #0.02  
 nx :	400
 ny :	200
-nz :	2 #4          
+nz :	1 #4          
 
 # EOS parameters: rho(Z)=rho0*rho1/((1-Z)*rho1+Z*rho0)
 rho0 : 1.225     # [kg]
 rho1 : 1.225
-rhost: 0.3
-Zst  : 0.5
+rhost: 0.3      # Not read in
+Zst  : 0.5      # Not read in
 
 # Fluid properties (air)
 Dynamic viscosity :	 3.178e-5  
@@ -21,11 +21,11 @@ Dynamic diffusivity : 2.1e-5
 
 # Inflow definition
 Z jet : 0           # Set to 0 for pure air flow input
-D jet : 0.01 #0.0061         # diameter of jet [m]
-U jet : 13.5 #27           # [m/s] -> Re ~ 6,000
+D jet : 0.0061 # 0.01        # diameter of jet [m]
+U jet : 27  #13.5          # [m/s] -> Re ~ 6,000
 Z coflow : 0        # No coflow for non-reactive case
-D coflow : 0  
-U coflow : 0
+D coflow : 0        # Not read in
+U coflow : 0        # Not read in
 
 # Time integration
 Max timestep size :	1e-4    

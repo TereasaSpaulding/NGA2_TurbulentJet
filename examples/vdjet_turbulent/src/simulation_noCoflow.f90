@@ -10,7 +10,6 @@ module simulation
    use ensight_class,     only: ensight
    use event_class,       only: event
    use monitor_class,     only: monitor
-   use sgsmodel_class,    only: sgsmodel     ! SGS model for eddy viscosity
    implicit none
    private
    
@@ -20,7 +19,6 @@ module simulation
    type(lowmach),     public :: fs
    type(vdscalar),    public :: sc
    type(timetracker), public :: time
-   type(sgsmodel),    public :: sgs   !< SGS model for eddy viscosity  ! For SGS model 
    
    !> Ensight postprocessing
    type(ensight) :: ens_out
@@ -32,21 +30,17 @@ module simulation
    public :: simulation_init,simulation_run,simulation_final
    
    !> Private work arrays
-   real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW,resSC
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    
    !> Equation of state
-   real(WP) :: rho0, rho1
+   real(WP) :: rho0,rho1
    real(WP) :: Z_jet
    real(WP) :: D_jet
    real(WP) :: U_jet
    
    !> Integral of pressure residual
    real(WP) :: int_RP=0.0_WP
-
-   !> Fluid definition
-   real(WP) :: visc
    
 contains
    
@@ -129,9 +123,9 @@ contains
       isIn=.false.
       ! Jet in yz plane
       radius=norm2([pg%ym(j),pg%zm(k)]-[0.0_WP,0.0_WP])
-      if (radius.le.0.5_WP*D_jet.and.i.eq.pg%imin- 1) isIn=.true.
+      if (radius.le.0.5_WP*D_jet.and.i.eq.pg%imin-1) isIn=.true.
    end function jetsc
-
+   
    !> Obtain density from equation of state based on Burke-Schumann
    subroutine get_rho()
       implicit none
@@ -139,12 +133,12 @@ contains
       do k=sc%cfg%kmino_,sc%cfg%kmaxo_
          do j=sc%cfg%jmino_,sc%cfg%jmaxo_
             do i=sc%cfg%imino_,sc%cfg%imaxo_
-               sc%rho(i,j,k) = rho0    ! No density changes for nonreactive case
+               sc%rho(i,j,k)= rho0
             end do
          end do
       end do
    end subroutine get_rho
-  
+   
    !> Initialization of problem solver
    subroutine simulation_init
       use param, only: param_read
@@ -155,11 +149,11 @@ contains
       call param_read('rho0',rho0)
       call param_read('rho1',rho1)
       
-
       ! Read in inlet information
       call param_read('Z jet',Z_jet)
       call param_read('D jet',D_jet)
       call param_read('U jet',U_jet)
+      
       
       ! Create a low-Mach flow solver with bconds
       create_velocity_solver: block
@@ -170,9 +164,9 @@ contains
          fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
          ! Assign constant viscosity
          call param_read('Dynamic viscosity',visc); fs%visc=visc
-         ! Define jet boundary conditions
+         ! Define jet and coflow boundary conditions
          call fs%add_bcond(name='jet'   ,type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=jet   )
-         ! Use slip on the sides with correction 
+         ! Use slip on the sides with correction
          !call fs%add_bcond(name='yp',type=slip,face='y',dir=+1,canCorrect=.true.,locator=yp_locator)
          !call fs%add_bcond(name='ym',type=slip,face='y',dir=-1,canCorrect=.true.,locator=ym_locator)
          !call fs%add_bcond(name='zp',type=slip,face='z',dir=+1,canCorrect=.true.,locator=zp_locator)
@@ -198,7 +192,7 @@ contains
          real(WP) :: diffusivity
          ! Create scalar solver
          sc=vdscalar(cfg=cfg,scheme=quick,name='MixFrac')
-         ! Define jet boundary conditions
+         ! Define jet and coflow boundary conditions
          call sc%add_bcond(name='jet'   ,type=dirichlet,locator=jetsc   )
          ! Outflow on the right
          call sc%add_bcond(name='outflow',type=neumann,locator=xp_locator,dir='+x')
@@ -215,7 +209,6 @@ contains
       ! Allocate work arrays
       allocate_work_arrays: block
          ! Flow solver
-         allocate(gradU(1:3,1:3,fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))   
          allocate(resU(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(resV(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(resW(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
@@ -272,7 +265,7 @@ contains
          do n=1,mybc%itr%no_
             i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
             fs%U(i,j,k)   =U_jet
-            fs%rhoU(i,j,k)=U_jet*rho0   ! No Burke-Schumann for nonreactive case         
+            fs%rhoU(i,j,k)=U_jet*rho0
          end do
          ! Get cell-centered velocities and continuity residual
          call fs%interp_vel(Ui,Vi,Wi)
@@ -281,10 +274,6 @@ contains
          call fs%get_mfr()
       end block initialize_velocity
       
-      ! Create an LES model
-      create_sgs: block
-         sgs=sgsmodel(cfg=fs%cfg,umask=fs%umask,vmask=fs%vmask,wmask=fs%wmask)
-      end block create_sgs
       
       ! Add Ensight output
       create_ensight: block
@@ -376,16 +365,6 @@ contains
          fs%Uold=fs%U; fs%rhoUold=fs%rhoU
          fs%Vold=fs%V; fs%rhoVold=fs%rhoV
          fs%Wold=fs%W; fs%rhoWold=fs%rhoW
-
-         ! For SGS model
-         ! Turbulence modeling
-         sgs_modeling: block
-            use sgsmodel_class, only: vreman
-            resU=fs%rho
-            call fs%get_gradu(gradU)
-            call sgs%get_visc(type=vreman,dt=time%dtold,rho=resU,gradu=gradU)
-            fs%visc=visc+sgs%visc
-         end block sgs_modeling
          
          ! Apply time-varying Dirichlet conditions
          ! This is where time-dpt Dirichlet would be enforced
@@ -473,7 +452,7 @@ contains
                do n=1,mybc%itr%no_
                   i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
                   fs%U(i,j,k)   =U_jet
-                  fs%rhoU(i,j,k)=U_jet*rho0 ! No Burke-Schumann for nonreactive case
+                  fs%rhoU(i,j,k)=U_jet*rho0
                end do
             end block dirichlet_velocity
             
@@ -533,9 +512,12 @@ contains
       ! timetracker
       
       ! Deallocate work arrays
-      deallocate(resSC,resU,resV,resW,Ui,Vi,Wi, gradU)
+      deallocate(resSC,resU,resV,resW,Ui,Vi,Wi)
       
    end subroutine simulation_final
+   
+   
+   
    
    
 end module simulation

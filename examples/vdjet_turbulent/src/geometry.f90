@@ -49,8 +49,8 @@ contains
          end do
 
          ! Number of grid cells in jet domain
-         n_jet = 20 ! -> Make input parameter
-         dy_min = 0.01_WP*Djet! -> Input parameter
+         n_jet = 50 ! -> Make input parameter
+         dy_min = 0.05_WP*Djet! -> Input parameter
 
          ! Size/Number of large grid cells
          n_domain = ny - n_jet

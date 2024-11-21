@@ -2,4 +2,5 @@ build
 monitor
 ensight
 *Zone.Identifier
-**/nga.dp.gnu.opt.mpi.exe
+# Executable
+nga.*.exe

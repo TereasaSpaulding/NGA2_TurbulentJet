@@ -1,39 +1,34 @@
 # Parallelization
-Partition :	8 1 1
+Partition :	4 1 1
 
 # Mesh definition
-Lx :	4
-Ly :	2
-Lz :	0.01  !5
-nx :	400
-ny :	200
-nz :	1           !100
-
-# EOS parameters: rho(Z)=rho0*rho1/((1-Z)*rho1+Z*rho0)
-rho0 : 1
-rho1 : 1
-rhost: 0.3
-Zst  : 0.5
+Lx :	10
+Ly :	5
+Lz :	0.05
+nx :	200
+ny :	100
+nz :	1
 
 # Fluid properties
-Dynamic viscosity :	 0.001
-Dynamic diffusivity : 0.002
-
-# Inflow definition
-Z jet : 1
-D jet : 1
-U jet : 1
-Z coflow : 0.2
-D coflow : 3
-U coflow : 0.2
+Dynamic viscosity :	  0.001
+Dynamic diffusivity : 0.001
+Jet density :     1.0
+Coflow density :  1.0
+Jet diameter :    1.0
+Jet velocity :    1.0
+Coflow velocity : 0.1
 
 # Time integration
-Max timestep size :	1e-2
-Max cfl number :	   0.9
+Max timestep size :	5e-2
+Max cfl number :	1
 
 # Pressure solver
 Pressure tolerance : 	1e-6
 Pressure iteration : 	100
+
+# Implicit velocity solver
+Implicit tolerance : 	1e-6
+Implicit iteration : 	100
 
 # Ensight output
 Ensight output period : 1e-1

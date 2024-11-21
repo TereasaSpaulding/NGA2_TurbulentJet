@@ -1,0 +1,3 @@
+# List here the extra files here
+f90EXE_sources += geometry.f90 lpt_class.f90 sgsmodel_class.f90 simulation.f90 
+

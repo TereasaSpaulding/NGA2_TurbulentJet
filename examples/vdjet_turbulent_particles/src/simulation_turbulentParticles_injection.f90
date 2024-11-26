@@ -34,7 +34,7 @@ module simulation
    type(partmesh) :: pmesh
    
    !> Simulation monitor file
-   type(monitor) :: mfile,cflfile,consfile
+   type(monitor) :: mfile,cflfile,consfile, lptfile
    
    public :: simulation_init,simulation_run,simulation_final
    
@@ -54,8 +54,11 @@ module simulation
 
    !> Fluid definition
    real(WP) :: visc
-   ! Temporary for testing particle injection
-   real(WP), dimension(:,:,:), allocatable :: U0,V0,W0,visc0   
+
+   !> Mixing Layer Problem definition
+   real(WP) :: delta,Udiff
+   integer :: nwaveX,nwaveZ
+   real(WP), dimension(:), allocatable :: wnumbX,wshiftX,wampX,wnumbZ,wshiftZ,wampZ
 
 contains
    
@@ -185,7 +188,6 @@ contains
          !call fs%add_bcond(name='zp',type=slip,face='z',dir=+1,canCorrect=.true.,locator=zp_locator)
          !call fs%add_bcond(name='zm',type=slip,face='z',dir=-1,canCorrect=.true.,locator=zm_locator)
          ! Outflow on the right
-         !call fs%add_bcond(name='outflow',type=clipped_neumann,face='x',dir=+1,canCorrect=.false.,locator=xp_locator)
          call fs%add_bcond(name='outflow',type=clipped_neumann,face='x',dir=+1,canCorrect=.true.,locator=xp_locator)
          ! Configure pressure solver
          ps=hypre_str(cfg=cfg,name='Pressure',method=pcg_pfmg2,nst=7)
@@ -239,65 +241,10 @@ contains
          time=timetracker(amRoot=fs%cfg%amRoot)
          call param_read('Max timestep size',time%dtmax)
          call param_read('Max cfl number',time%cflmax)
+         call param_read('Max time',time%tmax)
          time%dt=time%dtmax
          time%itmax=2
       end block initialize_timetracker
-      
-      ! Initialize our LPT
-      initialize_lpt: block
-         use random, only: random_uniform
-         ! Create solver
-         lp=lpt(cfg=cfg,name='LPT')
-         ! Get particle density from the input
-         call param_read('Particle density',lp%rho)
-         ! Set gravity
-         call param_read('Gravity',lp%gravity)
-         ! Set filter scale to 3.5*dx
-         lp%filter_width=3.5_WP*cfg%min_meshsize
-         ! Turn off drag
-         lp%drag_model='none'
-         ! Initialize with zero particles
-         call lp%resize(0)
-         ! Get initial particle volume fraction
-         call lp%update_VF()
-         ! Set collision timescale
-         lp%tau_col=5.0_WP*time%dt
-         ! Set coefficient of restitution
-         call param_read('Coefficient of restitution',lp%e_n)
-         call param_read('Wall restitution',lp%e_w)
-         call param_read('Friction coefficient',lp%mu_f)
-         ! Injection parameters
-         call param_read('Particle mass flow rate',lp%mfr)
-         call param_read('Particle velocity',lp%inj_vel)
-         call param_read('Particle mean diameter',lp%inj_dmean)
-         call param_read('Particle standard deviation',lp%inj_dsd,default=0.0_WP)
-         call param_read('Particle min diameter',lp%inj_dmin,default=tiny(1.0_WP))
-         call param_read('Particle max diameter',lp%inj_dmax,default=huge(1.0_WP))
-         call param_read('Particle diameter shift',lp%inj_dshift,default=0.0_WP)
-         if (lp%inj_dsd.le.epsilon(1.0_WP)) then
-            lp%inj_dmin=lp%inj_dmean
-            lp%inj_dmax=lp%inj_dmean
-         end if
-         call param_read('Particle inject diameter',lp%inj_d)
-         lp%inj_pos(1)=lp%cfg%x(lp%cfg%imin)+lp%inj_dmax
-         lp%inj_pos(2:3)=0.0_WP
-         lp%inj_T=300.0_WP
-      end block initialize_lpt
-
-      ! For testing particle injection - treats flow as "quiescent fluid" from particle perspective
-      initialize_fluid_on_particle: block
-         use mathtools, only: twoPi
-         integer :: i,j,k
-         real(WP) :: viscf
-         ! Allocate arrays
-         allocate(U0(lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_))
-         allocate(V0(lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_))
-         allocate(W0(lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_))
-         allocate(visc0(lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_))
-         U0=0.0_WP; V0=0.0_WP; W0=0.0_WP
-         ! Set constant density and viscosity
-         call param_read('Dynamic viscosity',viscf); visc0=viscf
-      end block initialize_fluid_on_particle
 
       ! Initialize our mixture fraction field
       initialize_scalar: block
@@ -315,7 +262,6 @@ contains
          ! Compute density
          call get_rho()
       end block initialize_scalar
-      
       
       ! Initialize our velocity field
       initialize_velocity: block
@@ -348,24 +294,60 @@ contains
          sgs=sgsmodel(cfg=fs%cfg,umask=fs%umask,vmask=fs%vmask,wmask=fs%wmask)
       end block create_sgs
 
+      ! Initialize our LPT
+      initialize_lpt: block
+         use param,  only: param_read
+         use random, only: random_uniform
+         real(WP) :: dp
+         integer :: i,np
+         ! Create solver
+         lp=lpt(cfg=cfg,name='LPT')
+         ! Get drag model from the inpit
+         call param_read('Drag model',lp%drag_model,default='Schiller-Naumann')
+         ! Get particle density from the input
+         call param_read('Particle density',lp%rho)
+         ! Get particle diameter from the input
+         call param_read('Particle diameter',dp)
+         ! Get number of particles
+         call param_read('Number of particles',np)
+         ! Set filter scale to 3.5*dx
+         lp%filter_width=3.5_WP*cfg%min_meshsize
+         ! Initialize with zero particles
+         call lp%resize(0)
+         ! Get initial particle volume fraction
+         call lp%update_VF()
+         ! Set collision timescale
+         lp%tau_col=5.0_WP*time%dt
+         ! Set coefficient of restitution
+         call param_read('Coefficient of restitution',lp%e_n)
+         call param_read('Wall restitution',lp%e_w)
+         call param_read('Friction coefficient',lp%mu_f)
+         ! Injection parameters
+         call param_read('Particle mass flow rate',lp%mfr)
+         call param_read('Particle mean diameter',lp%inj_dmean)
+         call param_read('Particle standard deviation',lp%inj_dsd,default=0.0_WP)
+         call param_read('Particle min diameter',lp%inj_dmin,default=tiny(1.0_WP))
+         call param_read('Particle max diameter',lp%inj_dmax,default=huge(1.0_WP))
+         call param_read('Particle diameter shift',lp%inj_dshift,default=0.0_WP)
+         ! Inject particles at jet velocity
+         lp%inj_vel=U_jet
+         if (lp%inj_dsd.le.epsilon(1.0_WP)) then
+            lp%inj_dmin=lp%inj_dmean
+            lp%inj_dmax=lp%inj_dmean
+         end if
+         call param_read('Particle inject diameter',lp%inj_d)
+         lp%inj_pos(1)=lp%cfg%x(lp%cfg%imin)+lp%inj_dmax
+         lp%inj_pos(2:3)=0.0_WP
+         lp%inj_T=300.0_WP         
+      end block initialize_lpt
+
       ! Create partmesh object for Lagrangian particle output
       create_pmesh: block
-         integer :: i
-         pmesh=partmesh(nvar=2,nvec=2,name='lpt')
-         pmesh%varname(1)='id'
-         pmesh%varname(2)='diameter'
-         pmesh%vecname(1)='velocity'
-         pmesh%vecname(2)='ang_vel'
+         pmesh=partmesh(nvar=0,nvec=0,name='lpt')
          call lp%update_partmesh(pmesh)
-         do i=1,lp%np_
-            pmesh%var(1,i)=real(lp%p(i)%id,WP)
-            pmesh%var(2,i)=lp%p(i)%d
-            pmesh%vec(:,1,i)=lp%p(i)%vel
-            pmesh%vec(:,2,i)=lp%p(i)%angVel
-         end do
       end block create_pmesh
       
-      ! Add Ensight output
+      ! Add Ensight output - vdjet
       create_ensight: block
          ! Create Ensight output from cfg
          ens_out=ensight(cfg=cfg,name='vdjet')
@@ -378,15 +360,18 @@ contains
          call ens_out%add_scalar('divergence',fs%div)
          call ens_out%add_scalar('density',sc%rho)
          call ens_out%add_scalar('mixfrac',sc%SC)
+         ! Add particles and VF to output - particles
+         call ens_out%add_particle('particles',pmesh)
+         ! TODO: Maybe add_scalar() for VF?
          ! Output to ensight
          if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
-      
-      
+
       ! Create a monitor file
       create_monitor: block
          ! Prepare some info about fields
          call fs%get_cfl(time%dt,time%cfl)
+         call lp%get_cfl(time%dt,cflc=time%cfl,cfl=time%cfl) ! from particle injection case
          call fs%get_max()
          call sc%get_max()
          call sc%get_int()
@@ -407,7 +392,7 @@ contains
          call mfile%add_column(int_RP,'Int(RP)')
          call mfile%add_column(fs%divmax,'Maximum divergence')
          call mfile%add_column(fs%psolv%it,'Pressure iteration')
-         call mfile%add_column(fs%psolv%rerr,'Pressure error')
+         call mfile%add_column(fs%psolv%rerr,'Pressure error')      
          call mfile%write()
          ! Create CFL monitor
          cflfile=monitor(fs%cfg%amRoot,'cfl')
@@ -428,6 +413,23 @@ contains
          call consfile%add_column(sc%rhoint,'RHO integral')
          call consfile%add_column(sc%rhoSCint,'rhoSC integral')
          call consfile%write()
+         
+         ! Create LPT monitor
+         call lp%get_max()
+         lptfile=monitor(amroot=lp%cfg%amRoot,name='lpt')
+         call lptfile%add_column(time%n,'Timestep number')
+         call lptfile%add_column(time%t,'Time')
+         call lptfile%add_column(lp%np,'Particle number')
+         call lptfile%add_column(lp%Umin,'Particle Umin')
+         call lptfile%add_column(lp%Umax,'Particle Umax')
+         call lptfile%add_column(lp%Vmin,'Particle Vmin')
+         call lptfile%add_column(lp%Vmax,'Particle Vmax')
+         call lptfile%add_column(lp%Wmin,'Particle Wmin')
+         call lptfile%add_column(lp%Wmax,'Particle Wmax')
+         call lptfile%add_column(lp%dmin,'Particle dmin')
+         call lptfile%add_column(lp%dmax,'Particle dmax')
+         call lptfile%write()
+
       end block create_monitor
       
       
@@ -445,7 +447,7 @@ contains
          call fs%get_cfl(time%dt,time%cfl)
          call time%adjust_dt()
          call time%increment()
-         
+
          ! Remember old scalar
          sc%rhoold=sc%rho
          sc%SCold =sc%SC
@@ -455,16 +457,6 @@ contains
          fs%Uold=fs%U; fs%rhoUold=fs%rhoU
          fs%Vold=fs%V; fs%rhoVold=fs%rhoV
          fs%Wold=fs%W; fs%rhoWold=fs%rhoW
-
-         ! Inject particles
-         call lp%inject(dt=time%dt,avoid_overlap=.true.)
-
-         ! Collide particles
-         call lp%collide(dt=time%dt)
-
-         ! Advance particles by dt
-         U0=0.0_WP; V0=0.0_WP; W0=0.0_WP ! Will be replaced later?
-         call lp%advance(dt=time%dt,U=U0,V=V0,W=W0,rho=fs%rho,visc=visc0,stress_x=U0,stress_y=V0,stress_z=W0)
 
          ! For SGS model
          ! Turbulence modeling
@@ -585,6 +577,15 @@ contains
             call fs%rho_divide
             ! ===================================================
             
+            ! Inject particles
+            call lp%inject(dt=time%dt,avoid_overlap=.true.)
+
+            ! Collide particles
+            call lp%collide(dt=time%dt)
+
+            ! Advance particles by dt
+            call lp%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W,rho=fs%rho,visc=fs%visc)
+
             ! Increment sub-iteration counter
             time%it=time%it+1
             
@@ -597,16 +598,7 @@ contains
          
          ! Output to ensight
          if (ens_evt%occurs()) then
-            update_pmesh: block
-            integer :: i
             call lp%update_partmesh(pmesh)
-            do i=1,lp%np_
-               pmesh%var(1,i)=real(lp%p(i)%id,WP)
-               pmesh%var(2,i)=lp%p(i)%d
-               pmesh%vec(:,1,i)=lp%p(i)%vel
-               pmesh%vec(:,2,i)=lp%p(i)%angVel
-            end do
-            end block update_pmesh
             call ens_out%write_data(time%t)
          end if
          
@@ -614,10 +606,11 @@ contains
          call fs%get_max()
          call sc%get_max()
          call sc%get_int()
+         call lp%get_max()
          call mfile%write()
          call cflfile%write()
          call consfile%write()
-         
+         call lptfile%write()
       end do
       
    end subroutine simulation_run

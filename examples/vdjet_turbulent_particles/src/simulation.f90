@@ -351,7 +351,7 @@ contains
       ! Add Ensight output - vdjet
       create_ensight: block
          ! Create Ensight output from cfg
-         ens_out=ensight(cfg=cfg,name='vdjet')
+         ens_out=ensight(cfg=cfg,name='turbulent_particle_jet')
          ! Create event for Ensight output
          ens_evt=event(time=time,name='Ensight output')
          call param_read('Ensight output period',ens_evt%tper)

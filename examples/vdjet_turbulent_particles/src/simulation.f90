@@ -11,9 +11,9 @@ module simulation
    use event_class,       only: event
    use monitor_class,     only: monitor
    use sgsmodel_class,    only: sgsmodel     ! SGS model for eddy viscosity
-   ! Classes used in particle injection case
-   use lpt_class,         only: lpt
-   use partmesh_class,    only: partmesh
+   use lpt_class,         only: lpt          ! Particle solver
+   use partmesh_class,    only: partmesh     ! Particle mesh
+  ! use timer_class,       only: timer        ! Timer
    implicit none
    private
    
@@ -55,10 +55,9 @@ module simulation
    !> Fluid definition
    real(WP) :: visc
 
-   !> Mixing Layer Problem definition
-   real(WP) :: delta,Udiff
-   integer :: nwaveX,nwaveZ
-   real(WP), dimension(:), allocatable :: wnumbX,wshiftX,wampX,wnumbZ,wshiftZ,wampZ
+   !> Injection End Time
+   real(WP) :: tstop
+  ! type(timer) :: inj_timer
 
 contains
    
@@ -324,14 +323,15 @@ contains
          call param_read('Friction coefficient',lp%mu_f)
          ! Injection parameters
          call param_read('Particle mass flow rate',lp%mfr)
-         call param_read('Particle velocity',lp%inj_vel)         
          call param_read('Particle mean diameter',lp%inj_dmean)
          call param_read('Particle standard deviation',lp%inj_dsd,default=0.0_WP)
          call param_read('Particle min diameter',lp%inj_dmin,default=tiny(1.0_WP))
          call param_read('Particle max diameter',lp%inj_dmax,default=huge(1.0_WP))
          call param_read('Particle diameter shift',lp%inj_dshift,default=0.0_WP)
+         ! Read when injection should stop
+         call param_read('Injection Stop', tstop)
          ! Inject particles at jet velocity
-         !lp%inj_vel=U_jet
+         lp%inj_vel=U_jet
          if (lp%inj_dsd.le.epsilon(1.0_WP)) then
             lp%inj_dmin=lp%inj_dmean
             lp%inj_dmax=lp%inj_dmean
@@ -363,10 +363,18 @@ contains
          call ens_out%add_scalar('mixfrac',sc%SC)
          ! Add particles and VF to output - particles
          call ens_out%add_particle('particles',pmesh)
-         ! TODO: Maybe add_scalar() for VF?
          ! Output to ensight
          if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
+
+      ! Create Timer
+      !create_timer: block
+         ! Create timer object
+      !   inj_timer = constructor(comm,"injection_timer")         
+         ! Read when injection should stop
+      !   call param_read('Injection Stop', tstop)
+      !end block create_timer
+
 
       ! Create a monitor file
       create_monitor: block
@@ -578,11 +586,12 @@ contains
             call fs%rho_divide
             ! ===================================================
             
-            ! Inject particles
-            call lp%inject(dt=time%dt,avoid_overlap=.true.)
-
-            ! Collide particles
-            call lp%collide(dt=time%dt)
+            ! Inject particles up to certain time
+            if (time%t < tstop) then              
+               call lp%inject(dt=time%dt,avoid_overlap=.true.)
+               ! Collide particles
+               call lp%collide(dt=time%dt)
+            end if
 
             ! Advance particles by dt
             call lp%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W,rho=fs%rho,visc=fs%visc)

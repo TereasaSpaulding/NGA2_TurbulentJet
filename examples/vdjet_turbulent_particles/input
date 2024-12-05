@@ -44,9 +44,10 @@ Wall restitution :              0.1
 Friction coefficient :          0.5
 
 # Particle injection
-Particle inject diameter:       0.000002
-Particle mass flow rate:        0.000000008
+Particle inject diameter:       0.00305 # 1/2 Djet
+Particle mass flow rate:        0.000000104 # ~ 10k particles after 0.1 seconds
 Particle velocity:              27 0 0
+Injection Stop:                 0.1
 
 # Time integration
 Max timestep size :	5e-5 

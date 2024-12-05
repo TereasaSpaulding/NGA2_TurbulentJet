@@ -56,9 +56,9 @@ module simulation
    real(WP) :: visc
 
    !> Mixing Layer Problem definition
-   real(WP) :: delta,Udiff
-   integer :: nwaveX,nwaveZ
-   real(WP), dimension(:), allocatable :: wnumbX,wshiftX,wampX,wnumbZ,wshiftZ,wampZ
+   !real(WP) :: delta,Udiff
+   !integer :: nwaveX,nwaveZ
+   !real(WP), dimension(:), allocatable :: wnumbX,wshiftX,wampX,wnumbZ,wshiftZ,wampZ
 
 contains
    
@@ -306,10 +306,6 @@ contains
          call param_read('Drag model',lp%drag_model,default='Schiller-Naumann')
          ! Get particle density from the input
          call param_read('Particle density',lp%rho)
-         ! Get particle diameter from the input
-         call param_read('Particle diameter',dp)
-         ! Get number of particles
-         call param_read('Number of particles',np)
          ! Set filter scale to 3.5*dx
          lp%filter_width=3.5_WP*cfg%min_meshsize
          ! Initialize with zero particles

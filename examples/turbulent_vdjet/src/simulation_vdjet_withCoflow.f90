@@ -10,7 +10,6 @@ module simulation
    use ensight_class,     only: ensight
    use event_class,       only: event
    use monitor_class,     only: monitor
-   use sgsmodel_class,    only: sgsmodel     ! SGS model for eddy viscosity
    implicit none
    private
    
@@ -20,7 +19,6 @@ module simulation
    type(lowmach),     public :: fs
    type(vdscalar),    public :: sc
    type(timetracker), public :: time
-   type(sgsmodel),    public :: sgs   !< SGS model for eddy viscosity  ! For SGS model 
    
    !> Ensight postprocessing
    type(ensight) :: ens_out
@@ -32,21 +30,17 @@ module simulation
    public :: simulation_init,simulation_run,simulation_final
    
    !> Private work arrays
-   real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW,resSC
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    
    !> Equation of state
    real(WP) :: Zst,rho0,rho1,rhost
-   real(WP) :: Z_jet
-   real(WP) :: D_jet
-   real(WP) :: U_jet
+   real(WP) :: Z_jet,Z_cof
+   real(WP) :: D_jet,D_cof
+   real(WP) :: U_jet,U_cof
    
    !> Integral of pressure residual
    real(WP) :: int_RP=0.0_WP
-
-   !> Fluid definition
-   real(WP) :: visc
    
 contains
    
@@ -118,6 +112,21 @@ contains
       radius=norm2([pg%ym(j),pg%zm(k)]-[0.0_WP,0.0_WP])
       if (radius.le.0.5_WP*D_jet.and.i.eq.pg%imin) isIn=.true.
    end function jet
+
+
+   !> Function that localizes coflow at -x
+   function coflow(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      real(WP) :: radius
+      logical :: isIn
+      isIn=.false.
+      ! Coflow in yz plane
+      radius=norm2([pg%ym(j),pg%zm(k)]-[0.0_WP,0.0_WP])
+      if (radius.gt.0.5_WP*D_jet.and.radius.le.0.5_WP*D_cof.and.i.eq.pg%imin) isIn=.true.
+   end function coflow
+   
    
    !> Function that localizes jet at -x
    function jetsc(pg,i,j,k) result(isIn)
@@ -129,9 +138,24 @@ contains
       isIn=.false.
       ! Jet in yz plane
       radius=norm2([pg%ym(j),pg%zm(k)]-[0.0_WP,0.0_WP])
-      if (radius.le.0.5_WP*D_jet.and.i.eq.pg%imin- 1) isIn=.true.
+      if (radius.le.0.5_WP*D_jet.and.i.eq.pg%imin-1) isIn=.true.
    end function jetsc
 
+
+   !> Function that localizes coflow at -x
+   function coflowsc(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      real(WP) :: radius
+      logical :: isIn
+      isIn=.false.
+      ! Coflow in yz plane
+      radius=norm2([pg%ym(j),pg%zm(k)]-[0.0_WP,0.0_WP])
+      if (radius.gt.0.5_WP*D_jet.and.radius.le.0.5_WP*D_cof.and.i.eq.pg%imin-1) isIn=.true.
+   end function coflowsc
+
+   
    !> Obtain density from equation of state based on Burke-Schumann
    subroutine get_rho()
       implicit none
@@ -139,11 +163,12 @@ contains
       do k=sc%cfg%kmino_,sc%cfg%kmaxo_
          do j=sc%cfg%jmino_,sc%cfg%jmaxo_
             do i=sc%cfg%imino_,sc%cfg%imaxo_
-               sc%rho(i,j,k) = burke_schumann(sc%SC(i,j,k))
+               sc%rho(i,j,k)=burke_schumann(sc%SC(i,j,k))
             end do
          end do
       end do
    end subroutine get_rho
+
 
    !> Burke-Schumann EOS
    function burke_schumann(Z) result(rho)
@@ -157,7 +182,8 @@ contains
          rho=(1.0_WP-Zst)*rhost*rho1/(rho1*(1.0_WP-Zclip)+rhost*(Zclip-Zst))
       end if
    end function burke_schumann
-  
+   
+   
    !> Initialization of problem solver
    subroutine simulation_init
       use param, only: param_read
@@ -171,11 +197,15 @@ contains
       call param_read('Zst',Zst)
       if (Zst.le.0.0_WP) Zst=0.0_WP+epsilon(Zst)
       if (Zst.ge.1.0_WP) Zst=1.0_WP-epsilon(Zst)
+      
 
       ! Read in inlet information
       call param_read('Z jet',Z_jet)
       call param_read('D jet',D_jet)
       call param_read('U jet',U_jet)
+      call param_read('Z coflow',Z_cof)
+      call param_read('D coflow',D_cof)
+      call param_read('U coflow',U_cof)
       
       
       ! Create a low-Mach flow solver with bconds
@@ -187,9 +217,10 @@ contains
          fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
          ! Assign constant viscosity
          call param_read('Dynamic viscosity',visc); fs%visc=visc
-         ! Define jet boundary conditions
+         ! Define jet and coflow boundary conditions
          call fs%add_bcond(name='jet'   ,type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=jet   )
-         ! Use slip on the sides with correction 
+         call fs%add_bcond(name='coflow',type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=coflow)
+         ! Use slip on the sides with correction
          !call fs%add_bcond(name='yp',type=slip,face='y',dir=+1,canCorrect=.true.,locator=yp_locator)
          !call fs%add_bcond(name='ym',type=slip,face='y',dir=-1,canCorrect=.true.,locator=ym_locator)
          !call fs%add_bcond(name='zp',type=slip,face='z',dir=+1,canCorrect=.true.,locator=zp_locator)
@@ -215,8 +246,9 @@ contains
          real(WP) :: diffusivity
          ! Create scalar solver
          sc=vdscalar(cfg=cfg,scheme=quick,name='MixFrac')
-         ! Define jet boundary conditions
+         ! Define jet and coflow boundary conditions
          call sc%add_bcond(name='jet'   ,type=dirichlet,locator=jetsc   )
+         call sc%add_bcond(name='coflow',type=dirichlet,locator=coflowsc)
          ! Outflow on the right
          call sc%add_bcond(name='outflow',type=neumann,locator=xp_locator,dir='+x')
          ! Assign constant diffusivity
@@ -232,7 +264,6 @@ contains
       ! Allocate work arrays
       allocate_work_arrays: block
          ! Flow solver
-         allocate(gradU(1:3,1:3,fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))   
          allocate(resU(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(resV(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(resW(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
@@ -249,7 +280,6 @@ contains
          time=timetracker(amRoot=fs%cfg%amRoot)
          call param_read('Max timestep size',time%dtmax)
          call param_read('Max cfl number',time%cflmax)
-         call param_read('Max time',time%tmax)
          time%dt=time%dtmax
          time%itmax=2
       end block initialize_timetracker
@@ -267,6 +297,11 @@ contains
          do n=1,mybc%itr%no_
             i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
             sc%SC(i,j,k)=Z_jet
+         end do
+         call sc%get_bcond('coflow',mybc)
+         do n=1,mybc%itr%no_
+            i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+            sc%SC(i,j,k)=Z_cof
          end do
          ! Compute density
          call get_rho()
@@ -290,7 +325,13 @@ contains
          do n=1,mybc%itr%no_
             i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
             fs%U(i,j,k)   =U_jet
-            fs%rhoU(i,j,k)=U_jet*burke_schumann(Z_jet)  
+            fs%rhoU(i,j,k)=U_jet*burke_schumann(Z_jet)
+         end do
+         call fs%get_bcond('coflow',mybc)
+         do n=1,mybc%itr%no_
+            i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+            fs%U(i,j,k)   =U_cof
+            fs%rhoU(i,j,k)=U_cof*burke_schumann(Z_cof)
          end do
          ! Get cell-centered velocities and continuity residual
          call fs%interp_vel(Ui,Vi,Wi)
@@ -299,15 +340,11 @@ contains
          call fs%get_mfr()
       end block initialize_velocity
       
-      ! Create an LES model
-      create_sgs: block
-         sgs=sgsmodel(cfg=fs%cfg,umask=fs%umask,vmask=fs%vmask,wmask=fs%wmask)
-      end block create_sgs
       
       ! Add Ensight output
       create_ensight: block
          ! Create Ensight output from cfg
-         ens_out=ensight(cfg=cfg,name='turbulent_jet')
+         ens_out=ensight(cfg=cfg,name='vdjet')
          ! Create event for Ensight output
          ens_evt=event(time=time,name='Ensight output')
          call param_read('Ensight output period',ens_evt%tper)
@@ -394,16 +431,6 @@ contains
          fs%Uold=fs%U; fs%rhoUold=fs%rhoU
          fs%Vold=fs%V; fs%rhoVold=fs%rhoV
          fs%Wold=fs%W; fs%rhoWold=fs%rhoW
-
-         ! For SGS model
-         ! Turbulence modeling
-         sgs_modeling: block
-            use sgsmodel_class, only: vreman
-            resU=fs%rho
-            call fs%get_gradu(gradU)
-            call sgs%get_visc(type=vreman,dt=time%dtold,rho=resU,gradu=gradU)
-            fs%visc=visc+sgs%visc
-         end block sgs_modeling
          
          ! Apply time-varying Dirichlet conditions
          ! This is where time-dpt Dirichlet would be enforced
@@ -437,6 +464,11 @@ contains
                do n=1,mybc%itr%no_
                   i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
                   sc%SC(i,j,k)=Z_jet
+               end do
+               call sc%get_bcond('coflow',mybc)
+               do n=1,mybc%itr%no_
+                  i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+                  sc%SC(i,j,k)=Z_cof
                end do
             end block dirichlet_scalar
             ! ===================================================
@@ -491,7 +523,13 @@ contains
                do n=1,mybc%itr%no_
                   i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
                   fs%U(i,j,k)   =U_jet
-                  fs%rhoU(i,j,k)=U_jet*burke_schumann(Z_jet) 
+                  fs%rhoU(i,j,k)=U_jet*burke_schumann(Z_jet)
+               end do
+               call fs%get_bcond('coflow',mybc)
+               do n=1,mybc%itr%no_
+                  i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+                  fs%U(i,j,k)   =U_cof
+                  fs%rhoU(i,j,k)=U_cof*burke_schumann(Z_cof)
                end do
             end block dirichlet_velocity
             
@@ -514,10 +552,6 @@ contains
             call fs%rho_divide
             ! ===================================================
             
-            ! Update scalar diffusivity
-            ! Add turbuluent diffusivity = turbulent visc/turbulent Schmidt number 
-            sc%diff = sc%diff + sgs%visc/0.7
-
             ! Increment sub-iteration counter
             time%it=time%it+1
             
@@ -555,9 +589,12 @@ contains
       ! timetracker
       
       ! Deallocate work arrays
-      deallocate(resSC,resU,resV,resW,Ui,Vi,Wi, gradU)
+      deallocate(resSC,resU,resV,resW,Ui,Vi,Wi)
       
    end subroutine simulation_final
+   
+   
+   
    
    
 end module simulation

@@ -1,6 +1,6 @@
 !> Basic Lagrangian particle solver class:
 !> Provides support for Lagrangian-transported objects
-module lpt_class
+module lpt_react_class
    use precision,      only: WP
    use string,         only: str_medium
    use config_class,   only: config
@@ -11,7 +11,7 @@ module lpt_class
    
    
    ! Expose type/constructor/methods
-   public :: lpt,part,MPI_PART,MPI_PART_SIZE,prepare_mpi_part
+   public :: lpt_react,part,MPI_PART,MPI_PART_SIZE,prepare_mpi_part
    
    
    !> Memory adaptation parameter
@@ -33,20 +33,21 @@ module lpt_class
       real(WP), dimension(3) :: Acol       !< Collision acceleration
       real(WP), dimension(3) :: Tcol       !< Collision torque
       real(WP) :: dt                       !< Time step size for the particle
+      real(WP) :: temp              !< Particle Temperature
       !> MPI_INTEGER data
       integer , dimension(3) :: ind        !< Index of cell containing particle center
       integer  :: flag                     !< Control parameter (0=normal, 1=done->will be removed)
    end type part
    !> Number of blocks, block length, and block types in a particle
    integer, parameter                         :: part_nblock=3
-   integer           , dimension(part_nblock) :: part_lblock=[1,17,4]
+   integer           , dimension(part_nblock) :: part_lblock=[1,18,4]
    type(MPI_Datatype), dimension(part_nblock) :: part_tblock=[MPI_INTEGER8,MPI_DOUBLE_PRECISION,MPI_INTEGER]
    !> MPI_PART derived datatype and size
    type(MPI_Datatype) :: MPI_PART
    integer :: MPI_PART_SIZE
    
    !> Lagrangian particle tracking solver object definition
-   type :: lpt
+   type :: lpt_react
       
       ! This is our underlying config
       class(config), pointer :: cfg                       !< This is the config the solver is build for
@@ -136,13 +137,13 @@ module lpt_class
       procedure :: update_VF                              !< Compute particle volume fraction
       procedure :: filter                                 !< Apply volume filtering to field
       procedure :: inject                                 !< Inject particles at a prescribed boundary
-   end type lpt
+   end type lpt_react
    
    
    !> Declare lpt solver constructor
-   interface lpt
+   interface lpt_react
       procedure constructor
-   end interface lpt
+   end interface lpt_react
    
 contains
    
@@ -150,7 +151,7 @@ contains
    !> Default constructor for lpt solver
    function constructor(cfg,name) result(self)
       implicit none
-      type(lpt) :: self
+      type(lpt_react) :: self
       class(config), target, intent(in) :: cfg
       character(len=*), optional :: name
       integer :: i,j,k,l
@@ -324,7 +325,7 @@ contains
    !> Requires tau_col, e_n, e_w and mu_f to be set beforehand
    subroutine collide(this,dt,Gib,Nxib,Nyib,Nzib)
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       real(WP), intent(inout) :: dt  !< Timestep size over which to advance
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: Gib  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: Nxib !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -665,7 +666,7 @@ contains
       use mpi_f08, only : MPI_SUM,MPI_INTEGER
       use mathtools, only: Pi
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       real(WP), intent(inout) :: dt  !< Timestep size over which to advance
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: U         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: V         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -811,7 +812,7 @@ contains
    !> Calculate RHS of the particle ODEs
    subroutine get_rhs(this,U,V,W,rho,visc,stress_x,stress_y,stress_z,T,p,acc,torque,opt_dt)
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: U         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: V         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: W         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -907,7 +908,7 @@ contains
    subroutine update_VF(this)
       use mathtools, only: Pi
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       integer :: i
       real(WP) :: Vp
       ! Reset volume fraction
@@ -931,7 +932,7 @@ contains
    !> Laplacian filtering operation
    subroutine filter(this,A)
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: A     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP) :: filter_coeff
       integer :: i,j,k,n,nstep
@@ -1035,7 +1036,7 @@ contains
       use parallel, only: MPI_REAL_WP
       use mathtools, only: Pi
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       real(WP), intent(inout) :: dt                  !< Timestep size over which to advance
       logical, intent(in), optional :: avoid_overlap !< Option to avoid overlap during injection
       real(WP) :: inj_min(3),inj_max(3)              !< Min/max extents of injection
@@ -1241,7 +1242,7 @@ contains
       use mpi_f08,  only: MPI_ALLREDUCE,MPI_MAX
       use parallel, only: MPI_REAL_WP
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       real(WP), intent(in)  :: dt
       real(WP), intent(out) :: cflc
       real(WP), optional :: cfl
@@ -1281,7 +1282,7 @@ contains
       use mpi_f08,  only: MPI_ALLREDUCE,MPI_MAX,MPI_MIN,MPI_SUM
       use parallel, only: MPI_REAL_WP
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       real(WP) :: buf,safe_np
       integer :: i,j,k,ierr
       
@@ -1363,7 +1364,7 @@ contains
    subroutine update_partmesh(this,pmesh)
       use partmesh_class, only: partmesh
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       class(partmesh), intent(inout) :: pmesh
       integer :: i
       ! Reset particle mesh storage
@@ -1416,7 +1417,7 @@ contains
    subroutine sync(this)
       use mpi_f08
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       integer, dimension(0:this%cfg%nproc-1) :: nsend_proc,nrecv_proc
       integer, dimension(0:this%cfg%nproc-1) :: nsend_disp,nrecv_disp
       integer :: n,prank,ierr
@@ -1470,7 +1471,7 @@ contains
       use mpi_f08
       use messager, only: warn,die
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       integer, optional :: nover
       type(part), dimension(:), allocatable :: tosend
       type(part), dimension(:), allocatable :: torecv
@@ -1721,7 +1722,7 @@ contains
    !> Adaptation of particle array size
    subroutine resize(this,n)
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       integer, intent(in) :: n
       type(part), dimension(:), allocatable :: tmp
       integer :: size_now,size_new
@@ -1751,7 +1752,7 @@ contains
    !> Adaptation of ghost array size
    subroutine resize_ghost(this,n)
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       integer, intent(in) :: n
       type(part), dimension(:), allocatable :: tmp
       integer :: size_now,size_new
@@ -1781,7 +1782,7 @@ contains
    !> Clean-up of particle array by removing flag=1 particles
    subroutine recycle(this)
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       integer :: new_size,i,ierr
       ! Compact all active particles at the beginning of the array
       new_size=0
@@ -1811,7 +1812,7 @@ contains
       use messager, only: die
       use parallel, only: info_mpiio
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       character(len=*), intent(in) :: filename
       type(MPI_File) :: ifile
       type(MPI_Status):: status
@@ -1868,7 +1869,7 @@ contains
       use messager, only: die
       use parallel, only: info_mpiio
       implicit none
-      class(lpt), intent(inout) :: this
+      class(lpt_react), intent(inout) :: this
       character(len=*), intent(in) :: filename
       type(MPI_File) :: ifile
       type(MPI_Status):: status
@@ -1939,4 +1940,4 @@ contains
    end subroutine read
    
    
-end module lpt_class
+end module lpt_react_class

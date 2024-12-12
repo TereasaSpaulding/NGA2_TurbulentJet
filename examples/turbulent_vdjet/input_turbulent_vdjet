@@ -18,23 +18,16 @@ Zst  : 0.5
 # Fluid properties (air)
 Dynamic viscosity :	 1.802e-5  
 Dynamic diffusivity : 2.01e-5
-T jet     :  300
-T domain  :  275
 
 # Inflow definition
 Z jet : 1           
 D jet : 0.0061 # 0.01        # diameter of jet [m]
 U jet : 27  #13.5          # [m/s] -> Re ~ 6,000
 
-# Particle parameters
-Particle density :     100
-Particle diameter :    0.0000270705  # For St ~ 1
-Number of particles :  1000
-
 # Time integration
 Max timestep size :	1e-5 # max 1e-6 , cfl 0.5 at beginning 
-Max cfl number :	   0.7 
-Max time :          0.01
+Max cfl number :	   0.5 
+Max time :          0.003 
 
 # Pressure solver
 Pressure tolerance : 	1e-6

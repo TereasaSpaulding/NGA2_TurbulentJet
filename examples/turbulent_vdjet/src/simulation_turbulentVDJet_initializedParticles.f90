@@ -44,7 +44,7 @@ module simulation
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    
    !> Equation of state
-   real(WP) :: rho0
+   real(WP) :: Zst,rho0,rho1,rhost
    real(WP) :: Z_jet
    real(WP) :: D_jet
    real(WP) :: U_jet
@@ -54,12 +54,7 @@ module simulation
 
    !> Fluid definition
    real(WP) :: visc
-
-   !> Mixing Layer Problem definition
-   real(WP) :: delta,Udiff
-   integer :: nwaveX,nwaveZ
-   real(WP), dimension(:), allocatable :: wnumbX,wshiftX,wampX,wnumbZ,wshiftZ,wampZ
-
+   
 contains
    
    

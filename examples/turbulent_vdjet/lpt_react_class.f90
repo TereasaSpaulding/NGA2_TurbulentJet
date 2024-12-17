@@ -33,7 +33,7 @@ module lpt_react_class
       real(WP), dimension(3) :: Acol       !< Collision acceleration
       real(WP), dimension(3) :: Tcol       !< Collision torque
       real(WP) :: dt                       !< Time step size for the particle
-      real(WP) :: temp              !< Particle Temperature
+      real(WP) :: temp                     !< Particle Temperature
       !> MPI_INTEGER data
       integer , dimension(3) :: ind        !< Index of cell containing particle center
       integer  :: flag                     !< Control parameter (0=normal, 1=done->will be removed)
@@ -110,7 +110,9 @@ module lpt_react_class
       real(WP) :: Wmin,Wmax,Wmean,Wvar                    !< W velocity info
       integer  :: np_new,np_out                           !< Number of new and removed particles
       integer  :: ncol=0                                  !< Number of collisions
-      
+      ! Added for monitoring particle temperature
+      real(WP) :: Tmin, Tmax, Tmean
+
       ! Particle volume fraction
       real(WP), dimension(:,:,:), allocatable :: VF       !< Particle volume fraction, cell-centered
       
@@ -688,8 +690,8 @@ contains
       real(WP) :: mydt,dt_done,deng,Ip
       real(WP), dimension(3) :: acc,torque,dmom
       real(WP), dimension(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_) :: sx,sy,sz
-      type(part) :: myp,pold
-      
+      type(part) :: myp,pold 
+
       ! Zero out source term arrays
       if (present(srcU)) srcU=0.0_WP
       if (present(srcV)) srcV=0.0_WP
@@ -898,7 +900,7 @@ contains
       
       ! Compute heat transfer
       compute_heat_transfer: block
-         !> Todo
+
       end block compute_heat_transfer
       
    end subroutine get_rhs
@@ -1294,11 +1296,14 @@ contains
       this%Umin=huge(1.0_WP); this%Umax=-huge(1.0_WP); this%Umean=0.0_WP
       this%Vmin=huge(1.0_WP); this%Vmax=-huge(1.0_WP); this%Vmean=0.0_WP
       this%Wmin=huge(1.0_WP); this%Wmax=-huge(1.0_WP); this%Wmean=0.0_WP
+      this%Tmin=huge(1.0_WP); this%Tmax=-huge(1.0_WP); this%Tmean=0.0_WP
       do i=1,this%np_
          this%dmin=min(this%dmin,this%p(i)%d     ); this%dmax=max(this%dmax,this%p(i)%d     ); this%dmean=this%dmean+this%p(i)%d
          this%Umin=min(this%Umin,this%p(i)%vel(1)); this%Umax=max(this%Umax,this%p(i)%vel(1)); this%Umean=this%Umean+this%p(i)%vel(1)
          this%Vmin=min(this%Vmin,this%p(i)%vel(2)); this%Vmax=max(this%Vmax,this%p(i)%vel(2)); this%Vmean=this%Vmean+this%p(i)%vel(2)
          this%Wmin=min(this%Wmin,this%p(i)%vel(3)); this%Wmax=max(this%Wmax,this%p(i)%vel(3)); this%Wmean=this%Wmean+this%p(i)%vel(3)
+         ! For temp monitoring
+         this%Tmin=min(this%Tmin,this%p(i)%temp     ); this%Tmax=max(this%Tmax,this%p(i)%temp     ); this%Tmean=this%Tmean+this%p(i)%temp
       end do
       call MPI_ALLREDUCE(this%dmin ,buf,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr); this%dmin =buf
       call MPI_ALLREDUCE(this%dmax ,buf,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); this%dmax =buf
@@ -1312,7 +1317,11 @@ contains
       call MPI_ALLREDUCE(this%Wmin ,buf,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr); this%Wmin =buf
       call MPI_ALLREDUCE(this%Wmax ,buf,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); this%Wmax =buf
       call MPI_ALLREDUCE(this%Wmean,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%Wmean=buf/safe_np
-      
+      ! For temp monitoring
+      call MPI_ALLREDUCE(this%Tmin ,buf,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr); this%Tmin =buf
+      call MPI_ALLREDUCE(this%Tmax ,buf,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); this%Tmax =buf
+      call MPI_ALLREDUCE(this%Tmean,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%Tmean=buf/safe_np
+
       ! Diameter and velocity variance
       this%dvar=0.0_WP
       this%Uvar=0.0_WP

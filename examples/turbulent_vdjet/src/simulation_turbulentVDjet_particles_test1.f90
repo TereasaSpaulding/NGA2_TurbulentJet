@@ -12,13 +12,13 @@ module simulation
    use monitor_class,     only: monitor
    use sgsmodel_class,    only: sgsmodel     ! SGS model for eddy viscosity
    ! Classes used in particle injection case
-   use lpt_class,         only: lpt
+   use lpt_react_class,   only: lpt_react
    use partmesh_class,    only: partmesh
    implicit none
    private
    
    !> LPT Solver
-   type(lpt),         public :: lp
+   type(lpt_react),         public :: lp
 
    !> Single low Mach flow solver and scalar solver and corresponding time tracker
    type(hypre_str),   public :: ps
@@ -54,6 +54,10 @@ module simulation
 
    !> Fluid definition
    real(WP) :: visc
+
+   !> Flow temperature definition
+   real(WP) :: T_jet       ! Temperature of jet
+   real(WP) :: T_domain    ! Temperature of still fluid
    
 contains
    
@@ -184,6 +188,10 @@ contains
       call param_read('D jet',D_jet)
       call param_read('U jet',U_jet)
       
+      ! Read in temperature information
+      call param_read('T jet',T_jet)
+      call param_read('T domain',T_domain) 
+
       ! Create a low-Mach flow solver with bconds
       create_velocity_solver: block
          use hypre_str_class, only: pcg_pfmg2
@@ -244,6 +252,7 @@ contains
          allocate(Ui  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(Vi  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(Wi  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
+         !allocate(fluidTemp  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          ! Scalar solver
          allocate(resSC(sc%cfg%imino_:sc%cfg%imaxo_,sc%cfg%jmino_:sc%cfg%jmaxo_,sc%cfg%kmino_:sc%cfg%kmaxo_))
       end block allocate_work_arrays
@@ -314,7 +323,7 @@ contains
          real(WP) :: dp
          integer :: i,np
          ! Create solver
-         lp=lpt(cfg=cfg,name='LPT')
+         lp=lpt_react(cfg=cfg,name='LPT')
          ! Get drag model from the inpit
          call param_read('Drag model',lp%drag_model,default='Schiller-Naumann')
          ! Get particle density from the input
@@ -322,7 +331,7 @@ contains
          ! Get particle diameter from the input
          call param_read('Particle diameter',dp)
          ! Get number of particles
-         call param_read('Number of particles',np)
+         call param_read('Number of particles',np)         
          ! Root process initializes np particles randomly
          if (lp%cfg%amRoot) then
             call lp%resize(np)
@@ -345,6 +354,7 @@ contains
                lp%p(i)%Tcol=0.0_WP
                ! Give zero dt
                lp%p(i)%dt=0.0_WP
+               lp%p(i)%temp = T_domain
                ! Locate the particle on the mesh
                lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
                ! Activate the particle
@@ -356,12 +366,23 @@ contains
          ! Get initial particle volume fraction
          call lp%update_VF()
       end block initialize_lpt
-
+ 
       ! Create partmesh object for Lagrangian particle output
       create_pmesh: block
-         pmesh=partmesh(nvar=0,nvec=0,name='lpt')
+         integer :: i
+         pmesh=partmesh(nvar=1,nvec=0,name='lpt')
+         pmesh%varname(1)= 'temperature'
          call lp%update_partmesh(pmesh)
-      end block create_pmesh
+         do i=1,lp%np_
+            pmesh%var(1,i)=lp%p(i)%temp
+         end do
+      end block create_pmesh      
+
+      ! Previous in jet particles
+      !create_pmesh: block
+      !   pmesh=partmesh(nvar=0,nvec=0,name='lpt')
+      !   call lp%update_partmesh(pmesh)
+      !end block create_pmesh
       
       ! Add Ensight output - vdjet
       create_ensight: block
@@ -431,7 +452,7 @@ contains
          
          ! Create LPT monitor
          call lp%get_max()
-         lptfile=monitor(amroot=lp%cfg%amRoot,name='lpt')
+         lptfile=monitor(amroot=lp%cfg%amRoot,name='lpt_react')
          call lptfile%add_column(time%n,'Timestep number')
          call lptfile%add_column(time%t,'Time')
          call lptfile%add_column(lp%np,'Particle number')
@@ -457,7 +478,7 @@ contains
       
       ! Perform time integration
       do while (.not.time%done())
-         
+
          ! Increment time
          call fs%get_cfl(time%dt,time%cfl)
          call time%adjust_dt()
@@ -473,8 +494,7 @@ contains
          fs%Vold=fs%V; fs%rhoVold=fs%rhoV
          fs%Wold=fs%W; fs%rhoWold=fs%rhoW
 
-         ! For SGS model
-         ! Turbulence modeling
+         ! Turbulence modeling for viscosity
          sgs_modeling: block
             use sgsmodel_class, only: vreman
             resU=fs%rho
@@ -598,6 +618,31 @@ contains
 
             ! Advance particles by dt
             call lp%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W,rho=fs%rho,visc=fs%visc)
+
+            !> TODO: Make method of lp_react class
+            react_particles: block
+               integer :: part_idx, i,j,k 
+               integer, dimension(3) :: cell_idx
+               real(WP) :: Zcell, Tcell
+               do part_idx=1,lp%np_  
+                  ! Get index of cell containing particle                
+                  cell_idx = lp%p(part_idx)%ind
+                  i = cell_idx(1)
+                  j = cell_idx(2)
+                  k = cell_idx(3)
+                  ! Get mixture fraction at this cell
+                  Zcell = sc%SC(i,j,k)
+                  if (Zcell < Zst ) then
+                     ! Linearly interpolate with 500 K = T max at Zst
+                     Tcell = (Zcell/Zst)*(500.0_WP- T_domain) + T_domain
+                  else 
+                     Tcell = ((Zcell - Zst)/(Z_jet - Zst))*(T_jet - 500.0_WP) + 500.0_WP
+                  end if
+                  lp%p(part_idx)%temp = Tcell
+               end do
+               lp%sync()
+            end block react_particles
+
 
             ! Increment sub-iteration counter
             time%it=time%it+1

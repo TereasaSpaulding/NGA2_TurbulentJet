@@ -34,7 +34,7 @@ module simulation
    type(partmesh) :: pmesh
    
    !> Simulation monitor file
-   type(monitor) :: mfile,cflfile,consfile, lptfile
+   type(monitor) :: mfile,cflfile,consfile, lptfile, tempfile, Ptempfile
    
    public :: simulation_init,simulation_run,simulation_final
    
@@ -42,7 +42,9 @@ module simulation
    real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW,resSC
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
-   
+   real(WP), dimension(:,:,:), allocatable :: fluidTemp, Z_center
+
+
    !> Equation of state
    real(WP) :: Zst,rho0,rho1,rhost
    real(WP) :: Z_jet
@@ -252,7 +254,8 @@ contains
          allocate(Ui  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(Vi  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(Wi  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
-         !allocate(fluidTemp  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
+         allocate(fluidTemp  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
+         allocate(Z_center (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_)) ! DEBUGGING
          ! Scalar solver
          allocate(resSC(sc%cfg%imino_:sc%cfg%imaxo_,sc%cfg%jmino_:sc%cfg%jmaxo_,sc%cfg%kmino_:sc%cfg%kmaxo_))
       end block allocate_work_arrays
@@ -272,15 +275,31 @@ contains
       initialize_scalar: block
          use vdscalar_class, only: bcond
          integer :: n,i,j,k
+         integer :: jj
          type(bcond), pointer :: mybc
          ! Zero initial field
-         sc%SC=0.0_WP
+         sc%SC=0.0_WP   
+
+         ! Center band, Z = 1
+         Z_center = 0.0_WP
+         do jj = 22,42
+            Z_center(fs%cfg%imino_:fs%cfg%imaxo_,jj,fs%cfg%kmino_:fs%cfg%kmaxo_) = 1.0_WP                     
+         end do
+         
+
          ! Apply BCs
-         call sc%get_bcond('jet',mybc)
+         call sc%get_bcond('jet',mybc)         
          do n=1,mybc%itr%no_
             i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-            sc%SC(i,j,k)=Z_jet
+            sc%SC(i,j,k)=Z_jet      
          end do
+
+         ! DEBUGGING
+
+         do jj = 22,42
+            sc%SC(fs%cfg%imino_:fs%cfg%imaxo_,jj,fs%cfg%kmino_:fs%cfg%kmaxo_) = 1.0_WP                     
+         end do
+
          ! Compute density
          call get_rho()
       end block initialize_scalar
@@ -292,6 +311,7 @@ contains
          type(bcond), pointer :: mybc
          ! Zero initial field
          fs%U=0.0_WP; fs%V=0.0_WP; fs%W=0.0_WP
+         fluidTemp = T_domain ! ADDED
          ! Set density from scalar
          fs%rho=sc%rho
          ! Form momentum
@@ -354,9 +374,19 @@ contains
                lp%p(i)%Tcol=0.0_WP
                ! Give zero dt
                lp%p(i)%dt=0.0_WP
-               lp%p(i)%temp = T_domain
+               ! Give initial temperature
+               ! If particle is in center band of domain, set temperature to Z= 1               
+               !if (abs(lp%p(i)%pos(2)) < D_jet) then
+               !   lp%p(i)%temp = 1.0_WP
+               !else 
+               !   lp%p(i)%temp = 2.0_WP
+               !end if
+               !lp%p(i)%temp = T_domain
                ! Locate the particle on the mesh
                lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
+
+               lp%p(i)%temp = Z_center(lp%p(i)%ind(1), lp%p(i)%ind(2), lp%p(i)%ind(3))
+
                ! Activate the particle
                lp%p(i)%flag=0
             end do
@@ -397,6 +427,8 @@ contains
          call ens_out%add_scalar('divergence',fs%div)
          call ens_out%add_scalar('density',sc%rho)
          call ens_out%add_scalar('mixfrac',sc%SC)
+         call ens_out%add_scalar('temperature', fluidTemp)
+         call ens_out%add_scalar('Z',Z_center) ! DEBUGGING
          ! Add particles and VF to output - particles
          call ens_out%add_particle('particles',pmesh)
          ! Output to ensight
@@ -465,6 +497,15 @@ contains
          call lptfile%add_column(lp%dmin,'Particle dmin')
          call lptfile%add_column(lp%dmax,'Particle dmax')
          call lptfile%write()
+
+         ! Create Particle Temperature monitor
+         tempfile=monitor(fs%cfg%amRoot,'temp')
+         call tempfile%add_column(time%n,'Timestep number')
+         call tempfile%add_column(time%t,'Time')
+         call tempfile%add_column(lp%Tmax,'Max particle temperature')
+         call tempfile%add_column(lp%Tmin,'Min particle temperature')
+         call tempfile%add_column(lp%Tmean,'Mean particle temperature')
+         call tempfile%write()
 
       end block create_monitor
       
@@ -616,9 +657,36 @@ contains
             ! Add turbuluent diffusivity = turbulent visc/turbulent Schmidt number 
             sc%diff = sc%diff + sgs%visc/0.7
 
-            ! Advance particles by dt
-            call lp%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W,rho=fs%rho,visc=fs%visc)
+            !> Make method of lp_react class
+            get_fluid_temp: block         
+               use param, only: param_read
+               integer :: i,j,k
+               real(WP) :: Zcell, Tmax
+               call param_read("T max", Tmax)
+               do k=sc%cfg%kmino_,sc%cfg%kmaxo_
+                  do j=sc%cfg%jmino_,sc%cfg%jmaxo_
+                     do i=sc%cfg%imino_,sc%cfg%imaxo_
+                        
+                        Zcell = max(sc%SC(i,j,k),0.0_WP)
+                        !fluidTemp(i,j,k) = Zcell*(500.0_WP-275.0_WP) + 275.0_WP
+                        ! Linearly interpolate with 500 K = T max at Zst
+                        if ( Zcell < Zst) then                                                    
+                           fluidTemp(i,j,k) = (Zcell/Zst)*(Tmax- T_domain) + T_domain
+                        else 
+                           fluidTemp(i,j,k) = ((Zcell - Zst)/(Z_jet - Zst))*(T_jet - Tmax) + Tmax
+                        end if
+                     end do
+                  end do
+               end do   
+               
+               !fluidTemp = max(sc%SC,0.0_WP)*500.0_WP + 275.0_WP              
+            end block get_fluid_temp
 
+            ! Advance particles by dt
+            !call lp%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W,rho=fs%rho,visc=fs%visc, T= fluidTemp)
+            call lp%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W,rho=fs%rho,visc=fs%visc)
+            
+            
             ! Increment sub-iteration counter
             time%it=time%it+1
             
@@ -644,6 +712,7 @@ contains
          call cflfile%write()
          call consfile%write()
          call lptfile%write()
+         call tempfile%write()
       end do
       
    end subroutine simulation_run

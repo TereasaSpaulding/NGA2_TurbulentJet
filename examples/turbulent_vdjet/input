@@ -1,5 +1,5 @@
 # Parallelization
-Partition :	8 1 1
+Partition :	2 1 1
 
 # Mesh definition
 Lx :	0.2440  # ~ 40 D_jet
@@ -18,8 +18,9 @@ Zst  : 0.5
 # Fluid properties (air)
 Dynamic viscosity :	 1.802e-5  
 Dynamic diffusivity : 2.01e-5
-T jet     :  300
-T domain  :  275
+T max : 1173.15      # 900C typical for gasification
+T jet     :  773.15  # ~ 500 C
+T domain  :  293.15  # ~ 20C        
 
 # Inflow definition
 Z jet : 1           
@@ -29,12 +30,13 @@ U jet : 27  #13.5          # [m/s] -> Re ~ 6,000
 # Particle parameters
 Particle density :     100
 Particle diameter :    0.0000270705  # For St ~ 1
-Number of particles :  1000
+Number of particles :  100 #10000
+Conduction Coeff :     0.25 # 0.028 for air
 
 # Time integration
 Max timestep size :	1e-5 # max 1e-6 , cfl 0.5 at beginning 
 Max cfl number :	   0.7 
-Max time :          0.01
+Max time :          0.1
 
 # Pressure solver
 Pressure tolerance : 	1e-6

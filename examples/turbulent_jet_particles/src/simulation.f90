@@ -11,9 +11,9 @@ module simulation
    use event_class,       only: event
    use monitor_class,     only: monitor
    use sgsmodel_class,    only: sgsmodel     ! SGS model for eddy viscosity
-   use lpt_class,         only: lpt          ! Particle solver
-   use partmesh_class,    only: partmesh     ! Particle mesh
-  ! use timer_class,       only: timer        ! Timer
+   ! Classes used in particle injection case
+   use lpt_class,         only: lpt
+   use partmesh_class,    only: partmesh
    implicit none
    private
    
@@ -55,9 +55,10 @@ module simulation
    !> Fluid definition
    real(WP) :: visc
 
-   !> Injection End Time
-   real(WP) :: tstop
-  ! type(timer) :: inj_timer
+   !> Mixing Layer Problem definition
+   real(WP) :: delta,Udiff
+   integer :: nwaveX,nwaveZ
+   real(WP), dimension(:), allocatable :: wnumbX,wshiftX,wampX,wnumbZ,wshiftZ,wampZ
 
 contains
    
@@ -306,40 +307,41 @@ contains
          ! Get particle density from the input
          call param_read('Particle density',lp%rho)
          ! Get particle diameter from the input
-         !call param_read('Particle diameter',dp)
+         call param_read('Particle diameter',dp)
          ! Get number of particles
-         !call param_read('Number of particles',np)
-         ! Set filter scale to 3.5*dx
-         lp%filter_width=3.5_WP*cfg%min_meshsize
-         ! Initialize with zero particles
-         call lp%resize(0)
+         call param_read('Number of particles',np)
+         ! Root process initializes np particles randomly
+         if (lp%cfg%amRoot) then
+            call lp%resize(np)
+            do i=1,np
+               ! Give id
+               lp%p(i)%id=int(i,8)
+               ! Set the diameter
+               lp%p(i)%d=dp
+               ! Assign random position in domain
+               lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin),lp%cfg%x(lp%cfg%imax+1)),&
+               &            random_uniform(lp%cfg%y(lp%cfg%jmin),lp%cfg%y(lp%cfg%jmax+1)),&
+               &            random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
+               if (lp%cfg%nx.eq.1) lp%p(i)%pos(1)=0.0_WP
+               if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
+               ! Give zero velocity
+               lp%p(i)%vel=0.0_WP
+               lp%p(i)%angVel=0.0_WP
+               ! Zero out collision forces
+               lp%p(i)%Acol=0.0_WP
+               lp%p(i)%Tcol=0.0_WP
+               ! Give zero dt
+               lp%p(i)%dt=0.0_WP
+               ! Locate the particle on the mesh
+               lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
+               ! Activate the particle
+               lp%p(i)%flag=0
+            end do
+         end if
+         ! Distribute particles
+         call lp%sync()
          ! Get initial particle volume fraction
          call lp%update_VF()
-         ! Set collision timescale
-         lp%tau_col=5.0_WP*time%dt
-         ! Set coefficient of restitution
-         call param_read('Coefficient of restitution',lp%e_n)
-         call param_read('Wall restitution',lp%e_w)
-         call param_read('Friction coefficient',lp%mu_f)
-         ! Injection parameters
-         call param_read('Particle mass flow rate',lp%mfr)
-         call param_read('Particle mean diameter',lp%inj_dmean)
-         call param_read('Particle standard deviation',lp%inj_dsd,default=0.0_WP)
-         call param_read('Particle min diameter',lp%inj_dmin,default=tiny(1.0_WP))
-         call param_read('Particle max diameter',lp%inj_dmax,default=huge(1.0_WP))
-         call param_read('Particle diameter shift',lp%inj_dshift,default=0.0_WP)
-         ! Read when injection should stop
-         call param_read('Injection Stop', tstop)
-         ! Inject particles at jet velocity
-         lp%inj_vel=U_jet
-         if (lp%inj_dsd.le.epsilon(1.0_WP)) then
-            lp%inj_dmin=lp%inj_dmean
-            lp%inj_dmax=lp%inj_dmean
-         end if
-         call param_read('Particle inject diameter',lp%inj_d)
-         lp%inj_pos(1)=lp%cfg%x(lp%cfg%imin)+lp%inj_dmax
-         lp%inj_pos(2:3)=0.0_WP
-         lp%inj_T=300.0_WP         
       end block initialize_lpt
 
       ! Create partmesh object for Lagrangian particle output
@@ -366,15 +368,6 @@ contains
          ! Output to ensight
          if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
-
-      ! Create Timer
-      !create_timer: block
-         ! Create timer object
-      !   inj_timer = constructor(comm,"injection_timer")         
-         ! Read when injection should stop
-      !   call param_read('Injection Stop', tstop)
-      !end block create_timer
-
 
       ! Create a monitor file
       create_monitor: block
@@ -586,13 +579,6 @@ contains
             call fs%rho_divide
             ! ===================================================
             
-            ! Inject particles up to certain time
-            if (time%t < tstop) then              
-               call lp%inject(dt=time%dt,avoid_overlap=.true.)
-               ! Collide particles
-               call lp%collide(dt=time%dt)
-            end if
-
             ! Advance particles by dt
             call lp%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W,rho=fs%rho,visc=fs%visc)
 

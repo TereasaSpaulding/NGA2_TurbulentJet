@@ -8,35 +8,28 @@ Lz :	0.0305  # ~ 5 D_jet
 nx :	256
 ny :	64      
 nz :	32      # For cubic elements: x:y:z = 4:2:1  
-
-# EOS parameters: rho(Z)=rho0*rho1/((1-Z)*rho1+Z*rho0)
-rho0 : 1.225     # [kg]
-rho1 : 1.225
-
+n jet : 20
 
 # Fluid properties (air)
+rho0 : 1.225     # [kg]
 Dynamic viscosity :	 1.802e-5  
 Dynamic diffusivity : 2.01e-5
 Gravity :   9.81 0 0
 
 # Inflow definition
 Z jet : 0           # Set to 0 for pure air flow input
-D jet : 0.0061 # 0.01        # diameter of jet [m]
-U jet : 27  #13.5          # [m/s] -> Re ~ 6,000
-Z coflow : 0        # No coflow for non-reactive case
+D jet : 0.0061      # diameter of jet [m]
+U jet : 27          # [m/s] -> Re ~ 11,000
 
 # Particle parameters
 Particle density :     100
 Particle diameter :    0.0000270705  # For St ~ 1
-# Original Values
-#Particle density :     1000
-#Particle diameter :    0.01
 Number of particles :  10000
 
 # Time integration
 Max timestep size :	5e-5   
 Max cfl number :	   0.9
-Max time :          1 
+Max time :          0.5 
 
 # Pressure solver
 Pressure tolerance : 	1e-6

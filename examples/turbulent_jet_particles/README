@@ -1,1 +1,3 @@
-This is a variable density jet.
+This is a constant density turbulent jet with particle tracking. 
+One simulation file corresponds to particles initialized randomly in the domain. 
+The other simulation file corresponds to particles injected at the turbulent jet inflow.

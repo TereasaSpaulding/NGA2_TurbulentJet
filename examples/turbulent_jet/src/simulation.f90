@@ -37,7 +37,7 @@ module simulation
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    
    !> Equation of state
-   real(WP) :: rho0, rho1
+   real(WP) :: rho0
    real(WP) :: Z_jet
    real(WP) :: D_jet
    real(WP) :: U_jet
@@ -153,8 +153,6 @@ contains
       
       ! Read in the EOS info
       call param_read('rho0',rho0)
-      call param_read('rho1',rho1)
-      
 
       ! Read in inlet information
       call param_read('Z jet',Z_jet)

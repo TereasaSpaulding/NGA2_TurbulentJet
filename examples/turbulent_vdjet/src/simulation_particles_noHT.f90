@@ -2,50 +2,119 @@
 module simulation
    use precision,         only: WP
    use geometry,          only: cfg
+   use ddadi_class,       only: ddadi
+   use hypre_str_class,   only: hypre_str
    use lowmach_class,     only: lowmach
    use vdscalar_class,    only: vdscalar
    use timetracker_class, only: timetracker
    use ensight_class,     only: ensight
    use event_class,       only: event
    use monitor_class,     only: monitor
+   use sgsmodel_class,    only: sgsmodel     ! SGS model for eddy viscosity
+   ! Classes used in particle injection case
+   use lpt_react_class,   only: lpt_react
+   use partmesh_class,    only: partmesh
    implicit none
    private
    
+   !> LPT Solver
+   type(lpt_react),         public :: lp
+
    !> Single low Mach flow solver and scalar solver and corresponding time tracker
+   type(hypre_str),   public :: ps
+   type(ddadi),       public :: vs,ss
    type(lowmach),     public :: fs
    type(vdscalar),    public :: sc
    type(timetracker), public :: time
+   type(sgsmodel),    public :: sgs   !< SGS model for eddy viscosity 
    
    !> Ensight postprocessing
    type(ensight) :: ens_out
    type(event)   :: ens_evt
+   type(partmesh) :: pmesh
    
    !> Simulation monitor file
-   type(monitor) :: mfile,cflfile,consfile
+   type(monitor) :: mfile,cflfile,consfile, lptfile
    
    public :: simulation_init,simulation_run,simulation_final
    
    !> Private work arrays
+   real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW,resSC
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    
    !> Equation of state
-   real(WP) :: rho_jet,rho_cof
+   real(WP) :: Zst,rho0,rho1,rhost
+   real(WP) :: Z_jet
    real(WP) :: D_jet
-   real(WP) :: U_jet,U_cof
+   real(WP) :: U_jet
+   
+   !> Integral of pressure residual
+   real(WP) :: int_RP=0.0_WP
+
+   !> Fluid definition
+   real(WP) :: visc
+
+   !> Flow temperature definition
+   real(WP) :: T_jet       ! Temperature of jet
+   real(WP) :: T_domain    ! Temperature of still fluid
    
 contains
    
    
-   !> Function that localizes the right domain boundary
-   function right_boundary(pg,i,j,k) result(isIn)
+   !> Function that localizes y- boundary
+   function ym_locator(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      isIn=.false.
+      if (j.eq.pg%jmin) isIn=.true.
+   end function ym_locator
+   
+   
+   !> Function that localizes y+ boundary
+   function yp_locator(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      isIn=.false.
+      if (j.eq.pg%jmax+1) isIn=.true.
+   end function yp_locator
+
+
+   !> Function that localizes z- boundary
+   function zm_locator(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      isIn=.false.
+      if (k.eq.pg%kmin) isIn=.true.
+   end function zm_locator
+   
+   
+   !> Function that localizes z+ boundary
+   function zp_locator(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      isIn=.false.
+      if (k.eq.pg%kmax+1) isIn=.true.
+   end function zp_locator
+
+
+   !> Function that localizes the x+ boundary
+   function xp_locator(pg,i,j,k) result(isIn)
       use pgrid_class, only: pgrid
       class(pgrid), intent(in) :: pg
       integer, intent(in) :: i,j,k
       logical :: isIn
       isIn=.false.
       if (i.eq.pg%imax+1) isIn=.true.
-   end function right_boundary
+   end function xp_locator
    
 
    !> Function that localizes jet at -x
@@ -60,21 +129,6 @@ contains
       radius=norm2([pg%ym(j),pg%zm(k)]-[0.0_WP,0.0_WP])
       if (radius.le.0.5_WP*D_jet.and.i.eq.pg%imin) isIn=.true.
    end function jet
-
-
-   !> Function that localizes coflow at -x
-   function coflow(pg,i,j,k) result(isIn)
-      use pgrid_class, only: pgrid
-      class(pgrid), intent(in) :: pg
-      integer, intent(in) :: i,j,k
-      real(WP) :: radius
-      logical :: isIn
-      isIn=.false.
-      ! Coflow in yz plane
-      radius=norm2([pg%ym(j),pg%zm(k)]-[0.0_WP,0.0_WP])
-      if (radius.gt.0.5_WP*D_jet.and.i.eq.pg%imin) isIn=.true.
-   end function coflow
-   
    
    !> Function that localizes jet at -x
    function jetsc(pg,i,j,k) result(isIn)
@@ -86,109 +140,119 @@ contains
       isIn=.false.
       ! Jet in yz plane
       radius=norm2([pg%ym(j),pg%zm(k)]-[0.0_WP,0.0_WP])
-      if (radius.le.0.5_WP*D_jet.and.i.eq.pg%imin-1) isIn=.true.
+      if (radius.le.0.5_WP*D_jet.and.i.eq.pg%imin- 1) isIn=.true.
    end function jetsc
 
-
-   !> Function that localizes coflow at -x
-   function coflowsc(pg,i,j,k) result(isIn)
-      use pgrid_class, only: pgrid
-      class(pgrid), intent(in) :: pg
-      integer, intent(in) :: i,j,k
-      real(WP) :: radius
-      logical :: isIn
-      isIn=.false.
-      ! Coflow in yz plane
-      radius=norm2([pg%ym(j),pg%zm(k)]-[0.0_WP,0.0_WP])
-      if (radius.gt.0.5_WP*D_jet.and.i.eq.pg%imin-1) isIn=.true.
-   end function coflowsc
-
-   
-   !> Define here our equation of state
+   !> Obtain density from equation of state based on Burke-Schumann
    subroutine get_rho()
       implicit none
       integer :: i,j,k
-      ! Calculate density
       do k=sc%cfg%kmino_,sc%cfg%kmaxo_
          do j=sc%cfg%jmino_,sc%cfg%jmaxo_
             do i=sc%cfg%imino_,sc%cfg%imaxo_
-               sc%rho(i,j,k)=1.0_WP!rho_jet*rho_cof/((1.0_WP-sc%SC(i,j,k))*rho_jet+sc%SC(i,j,k)*rho_cof)
+               sc%rho(i,j,k) = burke_schumann(sc%SC(i,j,k))
             end do
          end do
       end do
    end subroutine get_rho
-   
-   
+
+   !> Burke-Schumann EOS
+   function burke_schumann(Z) result(rho)
+      real(WP), intent(in) :: Z
+      real(WP) :: rho
+      real(WP) :: Zclip
+      Zclip=min(max(Z,0.0_WP),1.0_WP)
+      if (Zclip.le.Zst) then
+         rho=Zst*rho0*rhost/(rhost*(Zst-Zclip)+rho0*Zclip)
+      else
+         rho=(1.0_WP-Zst)*rhost*rho1/(rho1*(1.0_WP-Zclip)+rhost*(Zclip-Zst))
+      end if
+   end function burke_schumann
+  
    !> Initialization of problem solver
    subroutine simulation_init
       use param, only: param_read
       implicit none
       
       
-      ! Read in the EOS info and jet diameter
-      call param_read('Jet density',rho_jet)
-      call param_read('Coflow density',rho_cof)
-      call param_read('Jet diameter',D_jet)
-      call param_read('Jet velocity',U_jet)
-      call param_read('Coflow velocity',U_cof)
+      ! Read in the EOS info
+      call param_read('rho0',rho0)
+      call param_read('rho1',rho1)
+      call param_read('rhost',rhost)
+      call param_read('Zst',Zst)
+      if (Zst.le.0.0_WP) Zst=0.0_WP+epsilon(Zst)
+      if (Zst.ge.1.0_WP) Zst=1.0_WP-epsilon(Zst)   
+
+      ! Read in inlet information
+      call param_read('Z jet',Z_jet)
+      call param_read('D jet',D_jet)
+      call param_read('U jet',U_jet)
       
-      
-      ! Create an incompressible flow solver with bconds
-      create_solver: block
-         use ils_class,     only: pcg_amg
-         use lowmach_class, only: dirichlet,clipped_neumann
+      ! Read in temperature information
+      call param_read('T jet',T_jet)
+      call param_read('T domain',T_domain) 
+
+      ! Create a low-Mach flow solver with bconds
+      create_velocity_solver: block
+         use hypre_str_class, only: pcg_pfmg2
+         use lowmach_class,   only: dirichlet,clipped_neumann,slip
          real(WP) :: visc
          ! Create flow solver
          fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
          ! Assign constant viscosity
          call param_read('Dynamic viscosity',visc); fs%visc=visc
-         ! Define jet and coflow boundary conditions
+         ! Define jet boundary conditions
          call fs%add_bcond(name='jet'   ,type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=jet   )
-         call fs%add_bcond(name='coflow',type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=coflow)
+         ! Use slip on the sides with correction 
+         !call fs%add_bcond(name='yp',type=slip,face='y',dir=+1,canCorrect=.true.,locator=yp_locator)
+         !call fs%add_bcond(name='ym',type=slip,face='y',dir=-1,canCorrect=.true.,locator=ym_locator)
+         !call fs%add_bcond(name='zp',type=slip,face='z',dir=+1,canCorrect=.true.,locator=zp_locator)
+         !call fs%add_bcond(name='zm',type=slip,face='z',dir=-1,canCorrect=.true.,locator=zm_locator)
          ! Outflow on the right
-         call fs%add_bcond(name='outflow',type=clipped_neumann,face='x',dir=+1,canCorrect=.true.,locator=right_boundary)
+         call fs%add_bcond(name='outflow',type=clipped_neumann,face='x',dir=+1,canCorrect=.true.,locator=xp_locator)
          ! Configure pressure solver
-         call param_read('Pressure iteration',fs%psolv%maxit)
-         call param_read('Pressure tolerance',fs%psolv%rcvg)
+         ps=hypre_str(cfg=cfg,name='Pressure',method=pcg_pfmg2,nst=7)
+         ps%maxlevel=18
+         call param_read('Pressure iteration',ps%maxit)
+         call param_read('Pressure tolerance',ps%rcvg)
          ! Configure implicit velocity solver
-         call param_read('Implicit iteration',fs%implicit%maxit)
-         call param_read('Implicit tolerance',fs%implicit%rcvg)
+         vs=ddadi(cfg=cfg,name='Velocity',nst=7)
          ! Setup the solver
-         call fs%setup(pressure_ils=pcg_amg,implicit_ils=pcg_amg)
-      end block create_solver
+         call fs%setup(pressure_solver=ps,implicit_solver=vs)
+      end block create_velocity_solver
       
       
       ! Create a scalar solver
       create_scalar: block
-         use ils_class,      only: pcg_amg
          use vdscalar_class, only: dirichlet,neumann,quick
          real(WP) :: diffusivity
          ! Create scalar solver
          sc=vdscalar(cfg=cfg,scheme=quick,name='MixFrac')
-         ! Define jet and coflow boundary conditions
+         ! Define jet boundary conditions
          call sc%add_bcond(name='jet'   ,type=dirichlet,locator=jetsc   )
-         call sc%add_bcond(name='coflow',type=dirichlet,locator=coflowsc)
          ! Outflow on the right
-         call sc%add_bcond(name='outflow',type=neumann,locator=right_boundary,dir='+x')
+         call sc%add_bcond(name='outflow',type=neumann,locator=xp_locator,dir='+x')
          ! Assign constant diffusivity
          call param_read('Dynamic diffusivity',diffusivity)
          sc%diff=diffusivity
          ! Configure implicit scalar solver
-         sc%implicit%maxit=fs%implicit%maxit; sc%implicit%rcvg=fs%implicit%rcvg
+         ss=ddadi(cfg=cfg,name='Scalar',nst=13)
          ! Setup the solver
-         call sc%setup(implicit_ils=pcg_amg)
+         call sc%setup(implicit_solver=ss)
       end block create_scalar
       
       
       ! Allocate work arrays
       allocate_work_arrays: block
          ! Flow solver
+         allocate(gradU(1:3,1:3,fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))   
          allocate(resU(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(resV(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(resW(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(Ui  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(Vi  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          allocate(Wi  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
+         !allocate(fluidTemp  (fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_))
          ! Scalar solver
          allocate(resSC(sc%cfg%imino_:sc%cfg%imaxo_,sc%cfg%jmino_:sc%cfg%jmaxo_,sc%cfg%kmino_:sc%cfg%kmaxo_))
       end block allocate_work_arrays
@@ -199,11 +263,11 @@ contains
          time=timetracker(amRoot=fs%cfg%amRoot)
          call param_read('Max timestep size',time%dtmax)
          call param_read('Max cfl number',time%cflmax)
+         call param_read('Max time',time%tmax)
          time%dt=time%dtmax
          time%itmax=2
       end block initialize_timetracker
-      
-      
+
       ! Initialize our mixture fraction field
       initialize_scalar: block
          use vdscalar_class, only: bcond
@@ -215,17 +279,11 @@ contains
          call sc%get_bcond('jet',mybc)
          do n=1,mybc%itr%no_
             i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-            sc%SC(i,j,k)=1.0_WP
-         end do
-         call sc%get_bcond('coflow',mybc)
-         do n=1,mybc%itr%no_
-            i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-            sc%SC(i,j,k)=0.0_WP
+            sc%SC(i,j,k)=Z_jet
          end do
          ! Compute density
          call get_rho()
       end block initialize_scalar
-      
       
       ! Initialize our velocity field
       initialize_velocity: block
@@ -234,35 +292,102 @@ contains
          type(bcond), pointer :: mybc
          ! Zero initial field
          fs%U=0.0_WP; fs%V=0.0_WP; fs%W=0.0_WP
-         ! Apply BCs
-         call fs%get_bcond('jet',mybc)
-         do n=1,mybc%itr%no_
-            i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-            fs%U(i,j,k)=U_jet
-         end do
-         call fs%get_bcond('coflow',mybc)
-         do n=1,mybc%itr%no_
-            i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-            fs%U(i,j,k)=U_cof
-         end do
          ! Set density from scalar
          fs%rho=sc%rho
          ! Form momentum
          call fs%rho_multiply
-         ! Apply all other boundary conditions
+         ! Apply BCs
          call fs%apply_bcond(time%t,time%dt)
+         call fs%get_bcond('jet',mybc)
+         do n=1,mybc%itr%no_
+            i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+            fs%U(i,j,k)   =U_jet
+            fs%rhoU(i,j,k)=U_jet*burke_schumann(Z_jet)         
+         end do
+         ! Get cell-centered velocities and continuity residual
          call fs%interp_vel(Ui,Vi,Wi)
-         resSC=0.0_WP
-         call fs%get_div(drhodt=resSC)
+         resSC=0.0_WP; call fs%get_div(drhodt=resSC)
          ! Compute MFR through all boundary conditions
          call fs%get_mfr()
       end block initialize_velocity
       
+      ! Create an LES model
+      create_sgs: block
+         sgs=sgsmodel(cfg=fs%cfg,umask=fs%umask,vmask=fs%vmask,wmask=fs%wmask)
+      end block create_sgs
+
+      ! Initialize our LPT
+      initialize_lpt: block
+         use param,  only: param_read
+         use random, only: random_uniform
+         real(WP) :: dp
+         integer :: i,np
+         ! Create solver
+         lp=lpt_react(cfg=cfg,name='LPT')
+         ! Get drag model from the inpit
+         call param_read('Drag model',lp%drag_model,default='Schiller-Naumann')
+         ! Get particle density from the input
+         call param_read('Particle density',lp%rho)
+         ! Get particle diameter from the input
+         call param_read('Particle diameter',dp)
+         ! Get number of particles
+         call param_read('Number of particles',np)         
+         ! Root process initializes np particles randomly
+         if (lp%cfg%amRoot) then
+            call lp%resize(np)
+            do i=1,np
+               ! Give id
+               lp%p(i)%id=int(i,8)
+               ! Set the diameter
+               lp%p(i)%d=dp
+               ! Assign random position in domain
+               lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin),lp%cfg%x(lp%cfg%imax+1)),&
+               &            random_uniform(lp%cfg%y(lp%cfg%jmin),lp%cfg%y(lp%cfg%jmax+1)),&
+               &            random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
+               if (lp%cfg%nx.eq.1) lp%p(i)%pos(1)=0.0_WP
+               if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
+               ! Give zero velocity
+               lp%p(i)%vel=0.0_WP
+               lp%p(i)%angVel=0.0_WP
+               ! Zero out collision forces
+               lp%p(i)%Acol=0.0_WP
+               lp%p(i)%Tcol=0.0_WP
+               ! Give zero dt
+               lp%p(i)%dt=0.0_WP
+               lp%p(i)%temp = T_domain
+               ! Locate the particle on the mesh
+               lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
+               ! Activate the particle
+               lp%p(i)%flag=0
+            end do
+         end if
+         ! Distribute particles
+         call lp%sync()
+         ! Get initial particle volume fraction
+         call lp%update_VF()
+      end block initialize_lpt
+ 
+      ! Create partmesh object for Lagrangian particle output
+      create_pmesh: block
+         integer :: i
+         pmesh=partmesh(nvar=1,nvec=0,name='lpt')
+         pmesh%varname(1)= 'temperature'
+         call lp%update_partmesh(pmesh)
+         do i=1,lp%np_
+            pmesh%var(1,i)=lp%p(i)%temp
+         end do
+      end block create_pmesh      
+
+      ! Previous in jet particles
+      !create_pmesh: block
+      !   pmesh=partmesh(nvar=0,nvec=0,name='lpt')
+      !   call lp%update_partmesh(pmesh)
+      !end block create_pmesh
       
-      ! Add Ensight output
+      ! Add Ensight output - vdjet
       create_ensight: block
          ! Create Ensight output from cfg
-         ens_out=ensight(cfg=cfg,name='vdjet')
+         ens_out=ensight(cfg=cfg,name='turbulent_vdjet')
          ! Create event for Ensight output
          ens_evt=event(time=time,name='Ensight output')
          call param_read('Ensight output period',ens_evt%tper)
@@ -272,15 +397,17 @@ contains
          call ens_out%add_scalar('divergence',fs%div)
          call ens_out%add_scalar('density',sc%rho)
          call ens_out%add_scalar('mixfrac',sc%SC)
+         ! Add particles and VF to output - particles
+         call ens_out%add_particle('particles',pmesh)
          ! Output to ensight
          if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
-      
-      
+
       ! Create a monitor file
       create_monitor: block
          ! Prepare some info about fields
          call fs%get_cfl(time%dt,time%cfl)
+         call lp%get_cfl(time%dt,cflc=time%cfl,cfl=time%cfl) ! from particle injection case
          call fs%get_max()
          call sc%get_max()
          call sc%get_int()
@@ -298,9 +425,10 @@ contains
          call mfile%add_column(sc%SCmin,'Zmin')
          call mfile%add_column(sc%rhomax,'RHOmax')
          call mfile%add_column(sc%rhomin,'RHOmin')
+         call mfile%add_column(int_RP,'Int(RP)')
          call mfile%add_column(fs%divmax,'Maximum divergence')
          call mfile%add_column(fs%psolv%it,'Pressure iteration')
-         call mfile%add_column(fs%psolv%rerr,'Pressure error')
+         call mfile%add_column(fs%psolv%rerr,'Pressure error')      
          call mfile%write()
          ! Create CFL monitor
          cflfile=monitor(fs%cfg%amRoot,'cfl')
@@ -321,6 +449,23 @@ contains
          call consfile%add_column(sc%rhoint,'RHO integral')
          call consfile%add_column(sc%rhoSCint,'rhoSC integral')
          call consfile%write()
+         
+         ! Create LPT monitor
+         call lp%get_max()
+         lptfile=monitor(amroot=lp%cfg%amRoot,name='lpt_react')
+         call lptfile%add_column(time%n,'Timestep number')
+         call lptfile%add_column(time%t,'Time')
+         call lptfile%add_column(lp%np,'Particle number')
+         call lptfile%add_column(lp%Umin,'Particle Umin')
+         call lptfile%add_column(lp%Umax,'Particle Umax')
+         call lptfile%add_column(lp%Vmin,'Particle Vmin')
+         call lptfile%add_column(lp%Vmax,'Particle Vmax')
+         call lptfile%add_column(lp%Wmin,'Particle Wmin')
+         call lptfile%add_column(lp%Wmax,'Particle Wmax')
+         call lptfile%add_column(lp%dmin,'Particle dmin')
+         call lptfile%add_column(lp%dmax,'Particle dmax')
+         call lptfile%write()
+
       end block create_monitor
       
       
@@ -333,12 +478,12 @@ contains
       
       ! Perform time integration
       do while (.not.time%done())
-         
+
          ! Increment time
          call fs%get_cfl(time%dt,time%cfl)
          call time%adjust_dt()
          call time%increment()
-         
+
          ! Remember old scalar
          sc%rhoold=sc%rho
          sc%SCold =sc%SC
@@ -348,6 +493,15 @@ contains
          fs%Uold=fs%U; fs%rhoUold=fs%rhoU
          fs%Vold=fs%V; fs%rhoVold=fs%rhoV
          fs%Wold=fs%W; fs%rhoWold=fs%rhoW
+
+         ! Turbulence modeling for viscosity
+         sgs_modeling: block
+            use sgsmodel_class, only: vreman
+            resU=fs%rho
+            call fs%get_gradu(gradU)
+            call sgs%get_visc(type=vreman,dt=time%dtold,rho=resU,gradu=gradU)
+            fs%visc=visc+sgs%visc
+         end block sgs_modeling
          
          ! Apply time-varying Dirichlet conditions
          ! This is where time-dpt Dirichlet would be enforced
@@ -357,29 +511,39 @@ contains
             
             ! ============= SCALAR SOLVER =======================
             ! Build mid-time scalar
-            !sc%SC=0.5_WP*(sc%SC+sc%SCold)
+            sc%SC=0.5_WP*(sc%SC+sc%SCold)
             
             ! Explicit calculation of drhoSC/dt from scalar equation
-            !call sc%get_drhoSCdt(resSC,fs%rhoU,fs%rhoV,fs%rhoW)
+            call sc%get_drhoSCdt(resSC,fs%rhoU,fs%rhoV,fs%rhoW)
             
             ! Assemble explicit residual
-            !resSC=time%dt*resSC-(2.0_WP*sc%rho*sc%SC-(sc%rho+sc%rhoold)*sc%SCold)
+            resSC=time%dt*resSC-(2.0_WP*sc%rho*sc%SC-(sc%rho+sc%rhoold)*sc%SCold)
             
             ! Form implicit residual
-            !call sc%solve_implicit(time%dt,resSC,fs%rhoU,fs%rhoV,fs%rhoW)
+            call sc%solve_implicit(time%dt,resSC,fs%rhoU,fs%rhoV,fs%rhoW)
             
-            ! Apply this residual
-            !sc%SC=2.0_WP*sc%SC-sc%SCold+resSC
+            ! Advance scalar field
+            sc%SC=2.0_WP*sc%SC-sc%SCold+resSC
             
-            ! Apply other boundary conditions on the resulting field
-            !call sc%apply_bcond(time%t,time%dt)
+            ! Apply all other boundary conditions on the resulting field
+            call sc%apply_bcond(time%t,time%dt)
+            dirichlet_scalar: block
+               use vdscalar_class, only: bcond
+               type(bcond), pointer :: mybc
+               integer :: n,i,j,k
+               call sc%get_bcond('jet',mybc)
+               do n=1,mybc%itr%no_
+                  i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+                  sc%SC(i,j,k)=Z_jet
+               end do
+            end block dirichlet_scalar
             ! ===================================================
             
             ! ============ UPDATE PROPERTIES ====================
             ! Backup rhoSC
             !resSC=sc%rho*sc%SC
             ! Update density
-            !call get_rho()
+            call get_rho()
             ! Rescale scalar for conservation
             !sc%SC=resSC/sc%rho
             ! UPDATE THE VISCOSITY
@@ -412,17 +576,29 @@ contains
             fs%V=2.0_WP*fs%V-fs%Vold+resV
             fs%W=2.0_WP*fs%W-fs%Wold+resW
             
-            ! Apply other boundary conditions and update momentum
-            call fs%apply_bcond(time%tmid,time%dtmid)
+            ! Update momentum
             call fs%rho_multiply()
+
+            ! Apply boundary conditions
             call fs%apply_bcond(time%tmid,time%dtmid)
+            dirichlet_velocity: block
+               use lowmach_class, only: bcond
+               type(bcond), pointer :: mybc
+               integer :: n,i,j,k
+               call fs%get_bcond('jet',mybc)
+               do n=1,mybc%itr%no_
+                  i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+                  fs%U(i,j,k)   =U_jet
+                  fs%rhoU(i,j,k)=U_jet*burke_schumann(Z_jet) 
+               end do
+            end block dirichlet_velocity
             
             ! Solve Poisson equation
-            !call sc%get_drhodt(dt=time%dt,drhodt=resSC)
-            resSC=0.0_WP
+            call sc%get_drhodt(dt=time%dt,drhodt=resSC)
             call fs%correct_mfr(drhodt=resSC)
             call fs%get_div(drhodt=resSC)
             fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dtmid
+            call cfg%integrate(A=fs%psolv%rhs,integral=int_RP)
             fs%psolv%sol=0.0_WP
             call fs%psolv%solve()
             call fs%shift_p(fs%psolv%sol)
@@ -436,6 +612,38 @@ contains
             call fs%rho_divide
             ! ===================================================
             
+            ! Update scalar diffusivity
+            ! Add turbuluent diffusivity = turbulent visc/turbulent Schmidt number 
+            sc%diff = sc%diff + sgs%visc/0.7
+
+            ! Advance particles by dt
+            call lp%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W,rho=fs%rho,visc=fs%visc)
+
+            !> TODO: Make method of lp_react class
+            react_particles: block
+               integer :: part_idx, i,j,k 
+               integer, dimension(3) :: cell_idx
+               real(WP) :: Zcell, Tcell
+               do part_idx=1,lp%np_  
+                  ! Get index of cell containing particle                
+                  cell_idx = lp%p(part_idx)%ind
+                  i = cell_idx(1)
+                  j = cell_idx(2)
+                  k = cell_idx(3)
+                  ! Get mixture fraction at this cell
+                  Zcell = sc%SC(i,j,k)
+                  if (Zcell < Zst ) then
+                     ! Linearly interpolate with 500 K = T max at Zst
+                     Tcell = (Zcell/Zst)*(500.0_WP- T_domain) + T_domain
+                  else 
+                     Tcell = ((Zcell - Zst)/(Z_jet - Zst))*(T_jet - 500.0_WP) + 500.0_WP
+                  end if
+                  lp%p(part_idx)%temp = Tcell
+               end do
+               lp%sync()
+            end block react_particles
+
+
             ! Increment sub-iteration counter
             time%it=time%it+1
             
@@ -447,16 +655,20 @@ contains
          call fs%get_div(drhodt=resSC)
          
          ! Output to ensight
-         if (ens_evt%occurs()) call ens_out%write_data(time%t)
+         if (ens_evt%occurs()) then
+            call lp%update_partmesh(pmesh)
+            call ens_out%write_data(time%t)
+         end if
          
          ! Perform and output monitoring
          call fs%get_max()
          call sc%get_max()
          call sc%get_int()
+         call lp%get_max()
          call mfile%write()
          call cflfile%write()
          call consfile%write()
-         
+         call lptfile%write()
       end do
       
    end subroutine simulation_run
@@ -473,12 +685,9 @@ contains
       ! timetracker
       
       ! Deallocate work arrays
-      deallocate(resSC,resU,resV,resW,Ui,Vi,Wi)
+      deallocate(resSC,resU,resV,resW,Ui,Vi,Wi, gradU)
       
    end subroutine simulation_final
-   
-   
-   
    
    
 end module simulation

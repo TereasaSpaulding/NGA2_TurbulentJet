@@ -38,11 +38,14 @@ contains
          call param_read('Lx',Lx); call param_read('nx',nx); allocate(x(nx+1))
          call param_read('Ly',Ly); call param_read('ny',ny); allocate(y(ny+1))
          call param_read('Lz',Lz); call param_read('nz',nz); allocate(z(nz+1))
+
          ! For refined geometry 
          allocate(dy(ny))
          call param_read('D jet', Djet) ! Read in particle diameter
+         call param_read('n jet', n_jet) ! Number of cells in jet domain
 
-         ! Create simple rectilinear grid
+
+         ! Create simple rectilinear grid in X and Z
          do i=1,nx+1
             x(i)=real(i-1,WP)/real(nx,WP)*Lx
          end do
@@ -51,9 +54,6 @@ contains
          end do
          
          !> Grid in Y
-
-         ! Future input parameters
-         n_jet = 20
          dy_min = Djet/real(n_jet,WP)
 
          ! Function Parameters

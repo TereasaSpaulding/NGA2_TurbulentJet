@@ -1,1 +1,14 @@
-This is a variable density jet.
+This is a variable density turbulent jet.
+
+simulation_particles_noHT: 
+-particle temperature is updated in the simualtion file
+-no heat transfer model in the lpt_react class 
+-(Use base lpt_react_noHT file)
+
+simulation_particles_withHT: 
+-particle temperature is updated using the heat transfer model in the lpt_react class                            
+-(Use base lpt_react_withHT file)
+
+simulation_ZCenterBandTest: 
+-particle temperature is not updated and equal to value of Z in domain
+-(Use base lpt_react_noHT file)
